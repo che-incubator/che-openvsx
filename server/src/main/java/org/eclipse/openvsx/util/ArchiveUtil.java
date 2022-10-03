@@ -16,8 +16,8 @@ import java.util.zip.ZipFile;
 
 public final class ArchiveUtil {
 
-    // Limit the size of fetched zip entries to 32 MB
-    private static final long MAX_ENTRY_SIZE = 33_554_432;
+    // Limit the size of fetched zip entries to 64 MB
+    private static final long MAX_ENTRY_SIZE = 67_108_864;
 
     private ArchiveUtil() {}
 
@@ -38,7 +38,7 @@ public final class ArchiveUtil {
     public static byte[] readEntry(ZipFile archive, ZipEntry entry) {
         try {
             if (entry.getSize() > MAX_ENTRY_SIZE)
-                throw new ErrorResultException("The file " + entry.getName() + " exceeds the size limit of 32 MB.");
+                throw new ErrorResultException("The file " + entry.getName() + " exceeds the size limit of 64 MB.");
             return archive.getInputStream(entry).readAllBytes();
         } catch (ZipException exc) {
             throw new ErrorResultException("Could not read zip file: " + exc.getMessage(), exc);
@@ -48,3 +48,4 @@ public final class ArchiveUtil {
     }
 
 }
+
