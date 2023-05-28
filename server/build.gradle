@@ -3,15 +3,15 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath "org.hibernate:hibernate-gradle-plugin:5.4.22.Final"
+        classpath "org.hibernate:hibernate-gradle-plugin:5.6.15.Final"
     }
 }
 plugins {
-    id 'nu.studer.jooq' version '6.0.1'
-    id 'de.undercouch.download' version '4.1.1'
-    id 'org.springframework.boot' version '2.7.0'
-    id 'io.spring.dependency-management' version '1.0.10.RELEASE'
-    id 'io.gatling.gradle' version '3.6.1'
+    id 'nu.studer.jooq' version '8.2'
+    id 'de.undercouch.download' version '5.4.0'
+    id 'org.springframework.boot' version '2.7.12'
+    id 'io.spring.dependency-management' version '1.1.0'
+    id 'io.gatling.gradle' version '3.9.5'
     id 'java'
     id 'maven-publish'
 }
@@ -19,20 +19,20 @@ apply plugin: 'org.hibernate.orm'
 
 def jooqSrcDir = 'src/main/jooq-gen'
 def versions = [
-    java: '11',
-    flyway: '7.3.1',
-    springdoc: '1.6.9',
-    spdx: '2.2.4',
-    gcloud: '1.113.4',
-    azure: '12.9.0',
-    guava: '28.2-jre',
-    junit: '5.7.1',
-    testcontainers: '1.15.2',
-    jackson: '2.12.5',
-    woodstox: '6.2.4',
-    jobrunr: '5.1.2',
-    bucket4j: '0.4.0',
-    ehcache: '3.10.0'
+    java: '17',
+    flyway: '9.19.1',
+    springdoc: '1.7.0',
+    spdx: '2.2.8',
+    gcloud: '2.22.2',
+    azure: '12.22.2',
+    guava: '32.0.0-jre',
+    junit: '5.9.3',
+    testcontainers: '1.18.1',
+    jackson: '2.15.1',
+    woodstox: '6.5.1',
+    jobrunr: '5.3.3',
+    bucket4j: '0.9.0',
+    ehcache: '3.10.8'
 ]
 ext['junit-jupiter.version'] = versions.junit
 sourceCompatibility = versions.java
