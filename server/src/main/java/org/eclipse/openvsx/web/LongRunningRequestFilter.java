@@ -9,32 +9,25 @@
  * ****************************************************************************** */
 package org.eclipse.openvsx.web;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StopWatch;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import javax.servlet.FilterChain;
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 
 public class LongRunningRequestFilter extends OncePerRequestFilter {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(LongRunningRequestFilter.class);
-
     private final long threshold;
-    private final StringBuilder builder;
 
     public LongRunningRequestFilter(long threshold) {
         this.threshold = threshold;
-        this.builder = new StringBuilder();
     }
 
     @Override
@@ -63,11 +56,17 @@ public class LongRunningRequestFilter extends OncePerRequestFilter {
     }
 
     private void logWarning(HttpServletRequest request, HttpServletResponse response, long millis, long maxBytes, boolean hasJsonBody, boolean jsonBodyTooLong) throws IOException {
+        var builder = new StringBuilder();
         builder.append("\n\t")
                 .append(request.getMethod())
                 .append(" | ")
-                .append(request.getRequestURI())
-                .append(" took ")
+                .append(request.getRequestURI());
+
+        if(request.getQueryString() != null) {
+            builder.append('?').append(request.getQueryString());
+        }
+
+        builder.append(" took ")
                 .append(millis)
                 .append(" ms.\n\t");
 
@@ -82,26 +81,9 @@ public class LongRunningRequestFilter extends OncePerRequestFilter {
             }
         }
 
-        builder.append("Headers:");
-        var headerNames = request.getHeaderNames().asIterator();
-        while(headerNames.hasNext()) {
-            var headerName = headerNames.next();
-            var headerValues = new ArrayList<String>();
-            var headers = request.getHeaders(headerName).asIterator();
-            while(headers.hasNext()) {
-                headerValues.add(headers.next());
-            }
-
-            builder.append("\n\t\t")
-                    .append(headerName)
-                    .append(": ")
-                    .append(String.join(", ", headerValues));
-        }
-
         builder.append("\n\tResponse: ")
                 .append(response.getStatus());
         
-        LOGGER.warn(builder.toString());
-        builder.setLength(0);
+        logger.warn(builder.toString());
     }
 }

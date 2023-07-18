@@ -28,9 +28,11 @@ import org.eclipse.openvsx.jooq.tables.JobrunrRecurringJobs;
 import org.eclipse.openvsx.jooq.tables.MigrationItem;
 import org.eclipse.openvsx.jooq.tables.Namespace;
 import org.eclipse.openvsx.jooq.tables.NamespaceMembership;
+import org.eclipse.openvsx.jooq.tables.NamespaceSocialLinks;
 import org.eclipse.openvsx.jooq.tables.PersistedLog;
 import org.eclipse.openvsx.jooq.tables.PersonalAccessToken;
 import org.eclipse.openvsx.jooq.tables.Shedlock;
+import org.eclipse.openvsx.jooq.tables.SignatureKeyPair;
 import org.eclipse.openvsx.jooq.tables.SpringSession;
 import org.eclipse.openvsx.jooq.tables.SpringSessionAttributes;
 import org.eclipse.openvsx.jooq.tables.UserData;
@@ -163,6 +165,11 @@ public class Tables {
     public static final NamespaceMembership NAMESPACE_MEMBERSHIP = NamespaceMembership.NAMESPACE_MEMBERSHIP;
 
     /**
+     * The table <code>public.namespace_social_links</code>.
+     */
+    public static final NamespaceSocialLinks NAMESPACE_SOCIAL_LINKS = NamespaceSocialLinks.NAMESPACE_SOCIAL_LINKS;
+
+    /**
      * The table <code>public.persisted_log</code>.
      */
     public static final PersistedLog PERSISTED_LOG = PersistedLog.PERSISTED_LOG;
@@ -176,6 +183,11 @@ public class Tables {
      * The table <code>public.shedlock</code>.
      */
     public static final Shedlock SHEDLOCK = Shedlock.SHEDLOCK;
+
+    /**
+     * The table <code>public.signature_key_pair</code>.
+     */
+    public static final SignatureKeyPair SIGNATURE_KEY_PAIR = SignatureKeyPair.SIGNATURE_KEY_PAIR;
 
     /**
      * The table <code>public.spring_session</code>.

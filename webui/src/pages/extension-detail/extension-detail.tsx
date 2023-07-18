@@ -25,6 +25,7 @@ import { ExtensionDetailChanges } from './extension-detail-changes';
 import { ExtensionDetailReviews } from './extension-detail-reviews';
 import { ExtensionDetailTabs, versionPointsToTab } from './extension-detail-tabs';
 import { ExportRatingStars } from './extension-rating-stars';
+import { NamespaceDetailRoutes } from '../namespace-detail/namespace-detail';
 
 export namespace ExtensionDetailRoutes {
     export namespace Parameters {
@@ -169,7 +170,6 @@ export class ExtensionDetailComponent extends React.Component<ExtensionDetailCom
 
     componentDidMount(): void {
         const params = this.props.match.params as ExtensionDetailComponent.Params;
-        document.title = `${params.name} – ${this.context.pageSettings.pageTitle}`;
         this.updateExtension(params);
     }
 
@@ -209,7 +209,6 @@ export class ExtensionDetailComponent extends React.Component<ExtensionDetailCom
             if (isError(extension)) {
                 throw extension;
             }
-            document.title = `${extension.displayName || extension.name} – ${this.context.pageSettings.pageTitle}`;
             const icon = await this.updateIcon(extension);
             this.setState({ extension, icon, loading: false });
         } catch (err) {
@@ -253,25 +252,47 @@ export class ExtensionDetailComponent extends React.Component<ExtensionDetailCom
 
     render(): React.ReactNode {
         const { extension, icon } = this.state;
-        if (!extension) {
-            return <>
-                <DelayedLoadIndicator loading={this.state.loading} />
-                {
-                    this.state.notFoundError ?
-                    <Box p={4}>
-                        <Typography variant='h5'>
-                            {this.state.notFoundError}
-                        </Typography>
-                    </Box>
-                    : null
-                }
-            </>;
-        }
+        const params = this.props.match.params as ExtensionDetailComponent.Params;
+        return <>
+            { this.renderHeaderTags(params, extension) }
+            <DelayedLoadIndicator loading={this.state.loading} />
+            {
+                extension
+                    ? this.renderExtension(extension, icon)
+                    : this.renderNotFound()
+            }
+        </>;
+    }
+
+    protected renderHeaderTags(params: ExtensionDetailComponent.Params, extension?: Extension): React.ReactNode {
+        const pageSettings = this.context.pageSettings;
+        const { extensionHeadTags: ExtensionHeadTagsComponent } = pageSettings.elements;
+        return <React.Fragment>
+            { ExtensionHeadTagsComponent
+                ? <ExtensionHeadTagsComponent extension={extension} params={params} pageSettings={pageSettings}/>
+                : null
+            }
+        </React.Fragment>;
+    }
+
+    protected renderNotFound(): React.ReactNode {
+        return <React.Fragment>
+            {
+                this.state.notFoundError ?
+                <Box p={4}>
+                    <Typography variant='h5'>
+                        {this.state.notFoundError}
+                    </Typography>
+                </Box>
+                : null
+            }
+        </React.Fragment>;
+    }
+
+    protected renderExtension(extension: Extension, icon?: string): React.ReactNode {
         const classes = this.props.classes;
         const headerTheme = extension.galleryTheme || this.context.pageSettings.themeType || 'light';
-
         return <>
-            <DelayedLoadIndicator loading={this.state.loading} />
             <Box className={classes.head}
                 style={{
                     backgroundColor: extension.galleryColor,
@@ -362,11 +383,12 @@ export class ExtensionDetailComponent extends React.Component<ExtensionDetailCom
             </Badge>
             <Box className={`${themeClass} ${classes.infoRowBreak} ${classes.alignVertically}`}>
                 <Box className={classes.alignVertically}>
-                    {this.renderAccessInfo(extension, themeClass)}&nbsp;<span
-                        title='Unique identifier'
-                        className={classes.code}>
-                        {extension.namespace}.{extension.name}
-                    </span>
+                    {this.renderAccessInfo(extension, themeClass)}&nbsp;
+                    <RouteLink
+                        to={createRoute([NamespaceDetailRoutes.ROOT, extension.namespace])}
+                        className={`${this.props.classes.link} ${themeClass}`}>
+                        {extension.namespaceDisplayName || extension.namespace}
+                    </RouteLink>
                 </Box>
                 <TextDivider themeType={themeType} collapseSmall={true} />
                 <Box className={classes.alignVertically}>

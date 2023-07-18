@@ -31,9 +31,11 @@ import org.eclipse.openvsx.jooq.tables.JobrunrRecurringJobs;
 import org.eclipse.openvsx.jooq.tables.MigrationItem;
 import org.eclipse.openvsx.jooq.tables.Namespace;
 import org.eclipse.openvsx.jooq.tables.NamespaceMembership;
+import org.eclipse.openvsx.jooq.tables.NamespaceSocialLinks;
 import org.eclipse.openvsx.jooq.tables.PersistedLog;
 import org.eclipse.openvsx.jooq.tables.PersonalAccessToken;
 import org.eclipse.openvsx.jooq.tables.Shedlock;
+import org.eclipse.openvsx.jooq.tables.SignatureKeyPair;
 import org.eclipse.openvsx.jooq.tables.SpringSession;
 import org.eclipse.openvsx.jooq.tables.SpringSessionAttributes;
 import org.eclipse.openvsx.jooq.tables.UserData;
@@ -177,6 +179,11 @@ public class Public extends SchemaImpl {
     public final NamespaceMembership NAMESPACE_MEMBERSHIP = NamespaceMembership.NAMESPACE_MEMBERSHIP;
 
     /**
+     * The table <code>public.namespace_social_links</code>.
+     */
+    public final NamespaceSocialLinks NAMESPACE_SOCIAL_LINKS = NamespaceSocialLinks.NAMESPACE_SOCIAL_LINKS;
+
+    /**
      * The table <code>public.persisted_log</code>.
      */
     public final PersistedLog PERSISTED_LOG = PersistedLog.PERSISTED_LOG;
@@ -190,6 +197,11 @@ public class Public extends SchemaImpl {
      * The table <code>public.shedlock</code>.
      */
     public final Shedlock SHEDLOCK = Shedlock.SHEDLOCK;
+
+    /**
+     * The table <code>public.signature_key_pair</code>.
+     */
+    public final SignatureKeyPair SIGNATURE_KEY_PAIR = SignatureKeyPair.SIGNATURE_KEY_PAIR;
 
     /**
      * The table <code>public.spring_session</code>.
@@ -255,9 +267,11 @@ public class Public extends SchemaImpl {
             MigrationItem.MIGRATION_ITEM,
             Namespace.NAMESPACE,
             NamespaceMembership.NAMESPACE_MEMBERSHIP,
+            NamespaceSocialLinks.NAMESPACE_SOCIAL_LINKS,
             PersistedLog.PERSISTED_LOG,
             PersonalAccessToken.PERSONAL_ACCESS_TOKEN,
             Shedlock.SHEDLOCK,
+            SignatureKeyPair.SIGNATURE_KEY_PAIR,
             SpringSession.SPRING_SESSION,
             SpringSessionAttributes.SPRING_SESSION_ATTRIBUTES,
             UserData.USER_DATA);

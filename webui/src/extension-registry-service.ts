@@ -9,8 +9,9 @@
  ********************************************************************************/
 
 import {
-    Extension, UserData, ExtensionCategory, ExtensionReviewList, PersonalAccessToken,
-    SearchResult, NewReview, SuccessResult, ErrorResult, CsrfTokenJson, isError, Namespace, MembershipRole, SortBy, SortOrder, UrlString, NamespaceMembershipList, PublisherInfo, SearchEntry
+    Extension, UserData, ExtensionCategory, ExtensionReviewList, PersonalAccessToken, SearchResult, NewReview,
+    SuccessResult, ErrorResult, CsrfTokenJson, isError, Namespace, NamespaceDetails, MembershipRole, SortBy,
+    SortOrder, UrlString, NamespaceMembershipList, PublisherInfo, SearchEntry
 } from './extension-registry-types';
 import { createAbsoluteURL, addQuery } from './utils';
 import { sendRequest, ErrorResponse } from './server-request';
@@ -41,6 +42,31 @@ export class ExtensionRegistryService {
         }
 
         return createAbsoluteURL(arr);
+    }
+
+    getNamespaceDetails(abortController: AbortController, name: string): Promise<Readonly<NamespaceDetails>> {
+        const endpoint = createAbsoluteURL([this.serverUrl, 'api', name, 'details']);
+        return sendRequest({ abortController, endpoint });
+    }
+
+    async setNamespaceDetails(abortController: AbortController, details: NamespaceDetails): Promise<Readonly<SuccessResult | ErrorResult>> {
+        const csrfToken = await this.getCsrfToken(abortController);
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json;charset=UTF-8'
+        };
+        if (!isError(csrfToken)) {
+            headers[csrfToken.header] = csrfToken.value;
+        }
+
+        const endpoint = createAbsoluteURL([this.serverUrl, 'user', 'namespace', details.name, 'details']);
+        return sendRequest({
+            abortController,
+            method: 'POST',
+            payload: details,
+            credentials: true,
+            endpoint,
+            headers
+        });
     }
 
     search(abortController: AbortController, filter?: ExtensionFilter): Promise<Readonly<SearchResult | ErrorResult>> {
@@ -411,6 +437,24 @@ export class AdminService {
             endpoint: createAbsoluteURL([this.registry.serverUrl, 'admin', 'create-namespace']),
             method: 'POST',
             payload: namespace,
+            headers
+        });
+    }
+
+    async changeNamespace(abortController: AbortController, req: {oldNamespace: string, newNamespace: string, removeOldNamespace: boolean, mergeIfNewNamespaceAlreadyExists: boolean}): Promise<Readonly<SuccessResult | ErrorResult>> {
+        const csrfToken = await this.registry.getCsrfToken(abortController);
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json;charset=UTF-8'
+        };
+        if (!isError(csrfToken)) {
+            headers[csrfToken.header] = csrfToken.value;
+        }
+        return sendRequest({
+            abortController,
+            credentials: true,
+            endpoint: createAbsoluteURL([this.registry.serverUrl, 'admin', 'change-namespace']),
+            method: 'POST',
+            payload: req,
             headers
         });
     }

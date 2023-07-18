@@ -24,13 +24,23 @@ public interface IExtensionRegistry {
 
     ExtensionJson getExtension(String namespace, String extensionName, String targetPlatform, String version);
 
+    VersionsJson getVersions(String namespace, String extension, String targetPlatform, int size, int offset);
+
+    VersionReferencesJson getVersionReferences(String namespace, String extension, String targetPlatform, int size, int offset);
+
     ResponseEntity<byte[]> getFile(String namespace, String extensionName, String targetPlatform, String version, String fileName);
 
     ReviewListJson getReviews(String namespace, String extension);
 
     SearchResultJson search(ISearchService.Options options);
 
-    QueryResultJson query(QueryParamJson param);
+    QueryResultJson query(QueryRequest request);
 
-    QueryResultJson queryV2(QueryParamJsonV2 param);
+    QueryResultJson queryV2(QueryRequestV2 request);
+
+    NamespaceDetailsJson getNamespaceDetails(String namespace);
+
+    ResponseEntity<byte[]> getNamespaceLogo(String namespaceName, String fileName);
+
+    String getPublicKey(String publicId);
 }

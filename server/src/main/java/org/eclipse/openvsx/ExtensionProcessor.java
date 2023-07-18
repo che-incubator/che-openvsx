@@ -9,9 +9,25 @@
  ********************************************************************************/
 package org.eclipse.openvsx;
 
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import org.apache.commons.codec.digest.DigestUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.eclipse.openvsx.adapter.ExtensionQueryResult;
+import org.eclipse.openvsx.entities.ExtensionVersion;
+import org.eclipse.openvsx.entities.FileResource;
+import org.eclipse.openvsx.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.util.Pair;
+
 import java.io.EOFException;
 import java.io.IOException;
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -19,23 +35,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
-
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.MissingNode;
-import com.fasterxml.jackson.dataformat.xml.XmlMapper;
-
-import org.eclipse.openvsx.entities.ExtensionVersion;
-import org.eclipse.openvsx.entities.FileResource;
-import org.eclipse.openvsx.util.ArchiveUtil;
-import org.eclipse.openvsx.util.ErrorResultException;
-import org.eclipse.openvsx.util.LicenseDetection;
-import org.eclipse.openvsx.util.TargetPlatform;
-import org.elasticsearch.common.Strings;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.data.util.Pair;
 
 /**
  * Processes uploaded extension files and extracts their metadata.
@@ -52,12 +51,12 @@ public class ExtensionProcessor implements AutoCloseable {
 
     protected final Logger logger = LoggerFactory.getLogger(ExtensionProcessor.class);
 
-    private final Path extensionFile;
+    private final TempFile extensionFile;
     private ZipFile zipFile;
     private JsonNode packageJson;
     private JsonNode vsixManifest;
 
-    public ExtensionProcessor(Path extensionFile) {
+    public ExtensionProcessor(TempFile extensionFile) {
         this.extensionFile = extensionFile;
     }
 
@@ -77,7 +76,7 @@ public class ExtensionProcessor implements AutoCloseable {
             return;
         }
         try {
-            zipFile = new ZipFile(extensionFile.toFile());
+            zipFile = new ZipFile(extensionFile.getPath().toFile());
         } catch (ZipException exc) {
             throw new ErrorResultException("Could not read zip file: " + exc.getMessage());
         } catch (EOFException exc) {
@@ -217,34 +216,41 @@ public class ExtensionProcessor implements AutoCloseable {
         return preReleaseNode.path("Value").asBoolean(false);
     }
 
+    public String getSponsorLink() {
+        loadVsixManifest();
+        var sponsorLinkNode = findByIdInArray(vsixManifest.path("Metadata").path("Properties").path("Property"), "Microsoft.VisualStudio.Code.SponsorLink");
+        return sponsorLinkNode.path("Value").asText();
+    }
+
     public ExtensionVersion getMetadata() {
         loadPackageJson();
         loadVsixManifest();
-        var extension = new ExtensionVersion();
-        extension.setVersion(getVersion());
-        extension.setTargetPlatform(getTargetPlatform());
-        extension.setPreview(isPreview());
-        extension.setPreRelease(isPreRelease());
-        extension.setDisplayName(vsixManifest.path("Metadata").path("DisplayName").asText());
-        extension.setDescription(vsixManifest.path("Metadata").path("Description").path("").asText());
-        extension.setEngines(getEngines(packageJson.path("engines")));
-        extension.setCategories(asStringList(vsixManifest.path("Metadata").path("Categories").asText(), ","));
-        extension.setExtensionKind(getExtensionKinds());
-        extension.setTags(getTags());
-        extension.setLicense(packageJson.path("license").textValue());
-        extension.setHomepage(getHomepage());
-        extension.setRepository(getRepository());
-        extension.setBugs(getBugs());
-        extension.setMarkdown(packageJson.path("markdown").textValue());
-        extension.setGalleryColor(getGalleryColor());
-        extension.setGalleryTheme(getGalleryTheme());
-        extension.setLocalizedLanguages(getLocalizedLanguages());
-        extension.setQna(packageJson.path("qna").textValue());
+        var extVersion = new ExtensionVersion();
+        extVersion.setVersion(getVersion());
+        extVersion.setTargetPlatform(getTargetPlatform());
+        extVersion.setPreview(isPreview());
+        extVersion.setPreRelease(isPreRelease());
+        extVersion.setDisplayName(vsixManifest.path("Metadata").path("DisplayName").asText());
+        extVersion.setDescription(vsixManifest.path("Metadata").path("Description").path("").asText());
+        extVersion.setEngines(getEngines(packageJson.path("engines")));
+        extVersion.setCategories(asStringList(vsixManifest.path("Metadata").path("Categories").asText(), ","));
+        extVersion.setExtensionKind(getExtensionKinds());
+        extVersion.setTags(getTags());
+        extVersion.setLicense(packageJson.path("license").textValue());
+        extVersion.setHomepage(getHomepage());
+        extVersion.setRepository(getRepository());
+        extVersion.setSponsorLink(getSponsorLink());
+        extVersion.setBugs(getBugs());
+        extVersion.setMarkdown(packageJson.path("markdown").textValue());
+        extVersion.setGalleryColor(getGalleryColor());
+        extVersion.setGalleryTheme(getGalleryTheme());
+        extVersion.setLocalizedLanguages(getLocalizedLanguages());
+        extVersion.setQna(packageJson.path("qna").textValue());
 
-        return extension;
+        return extVersion;
     }
 
-    private String getVersion() {
+    public String getVersion() {
         return vsixManifest.path("Metadata").path("Identity").path("Version").asText();
     }
 
@@ -268,7 +274,7 @@ public class ExtensionProcessor implements AutoCloseable {
     }
 
     private List<String> asStringList(String value, String sep){
-        if (Strings.isNullOrEmpty(value)){
+        if (StringUtils.isEmpty(value)){
             return new ArrayList<>();
         }
 
@@ -291,7 +297,7 @@ public class ExtensionProcessor implements AutoCloseable {
     public List<FileResource> getFileResources(ExtensionVersion extVersion) {
         var resources = new ArrayList<FileResource>();
         var mappers = List.<Function<ExtensionVersion, FileResource>>of(
-                this::getManifest, this::getReadme, this::getChangelog, this::getLicense, this::getIcon
+                this::getManifest, this::getReadme, this::getChangelog, this::getLicense, this::getIcon, this::getVsixManifest
         );
 
         mappers.forEach(mapper -> Optional.of(extVersion).map(mapper).ifPresent(resources::add));
@@ -324,25 +330,37 @@ public class ExtensionProcessor implements AutoCloseable {
                 .forEach(processor);
     }
 
-    public FileResource getBinary(ExtensionVersion extVersion) {
+    public FileResource getBinary(ExtensionVersion extVersion, String binaryName) {
+        if(binaryName == null) {
+            binaryName = NamingUtil.toFileFormat(extVersion, ".vsix");
+        }
+
         var binary = new FileResource();
         binary.setExtension(extVersion);
-        binary.setName(getBinaryName(extVersion));
+        binary.setName(binaryName);
         binary.setType(FileResource.DOWNLOAD);
         binary.setContent(null);
         return binary;
     }
 
-    private String getBinaryName(ExtensionVersion extVersion) {
-        var extension = extVersion.getExtension();
-        var namespace = extension.getNamespace();
-        var resourceName = namespace.getName() + "." + extension.getName() + "-" + extVersion.getVersion();
-        if(!TargetPlatform.isUniversal(extVersion.getTargetPlatform())) {
-            resourceName += "@" + extVersion.getTargetPlatform();
+    public FileResource generateSha256Checksum(ExtensionVersion extVersion) {
+        String hash = null;
+        try(var input = Files.newInputStream(extensionFile.getPath())) {
+            hash = DigestUtils.sha256Hex(input);
+        } catch (IOException e) {
+            logger.error("Failed to read extensionFile", e);
         }
 
-        resourceName += ".vsix";
-        return resourceName;
+        if(hash == null) {
+            return null;
+        }
+
+        var sha256 = new FileResource();
+        sha256.setExtension(extVersion);
+        sha256.setName(NamingUtil.toFileFormat(extVersion, ".sha256"));
+        sha256.setType(FileResource.DOWNLOAD_SHA256);
+        sha256.setContent(hash.getBytes(StandardCharsets.UTF_8));
+        return sha256;
     }
 
     protected FileResource getManifest(ExtensionVersion extVersion) {
@@ -360,11 +378,11 @@ public class ExtensionProcessor implements AutoCloseable {
     }
 
     protected FileResource getReadme(ExtensionVersion extVersion) {
-        readInputStream();
-        var result = readFromAlternateNames(README);
+        var result = readFromVsixPackage(ExtensionQueryResult.ExtensionFile.FILE_DETAILS, README);
         if (result == null) {
             return null;
         }
+
         var readme = new FileResource();
         readme.setExtension(extVersion);
         readme.setName(result.getSecond());
@@ -374,11 +392,11 @@ public class ExtensionProcessor implements AutoCloseable {
     }
 
     public FileResource getChangelog(ExtensionVersion extVersion) {
-        readInputStream();
-        var result = readFromAlternateNames(CHANGELOG);
+        var result = readFromVsixPackage(ExtensionQueryResult.ExtensionFile.FILE_CHANGELOG, CHANGELOG);
         if (result == null) {
             return null;
         }
+
         var changelog = new FileResource();
         changelog.setExtension(extVersion);
         changelog.setName(result.getSecond());
@@ -393,7 +411,7 @@ public class ExtensionProcessor implements AutoCloseable {
         license.setExtension(extVersion);
         license.setType(FileResource.LICENSE);
         // Parse specifications in the form "SEE MIT LICENSE IN LICENSE.txt"
-        if (!Strings.isNullOrEmpty(extVersion.getLicense())) {
+        if (!StringUtils.isEmpty(extVersion.getLicense())) {
             var matcher = LICENSE_PATTERN.matcher(extVersion.getLicense());
             if (matcher.find()) {
                 extVersion.setLicense(matcher.group("license"));
@@ -410,10 +428,11 @@ public class ExtensionProcessor implements AutoCloseable {
             }
         }
 
-        var result = readFromAlternateNames(LICENSE);
+        var result = readFromVsixPackage(ExtensionQueryResult.ExtensionFile.FILE_LICENSE, LICENSE);
         if (result == null) {
             return null;
         }
+
         license.setName(result.getSecond());
         license.setContent(result.getFirst());
         detectLicense(result.getFirst(), extVersion);
@@ -421,9 +440,22 @@ public class ExtensionProcessor implements AutoCloseable {
     }
 
     private void detectLicense(byte[] content, ExtensionVersion extVersion) {
-        if (Strings.isNullOrEmpty(extVersion.getLicense())) {
+        if (StringUtils.isEmpty(extVersion.getLicense())) {
             var detection = new LicenseDetection();
             extVersion.setLicense(detection.detectLicense(content));
+        }
+    }
+
+    private Pair<byte[], String> readFromVsixPackage(String assetType, String[] alternateNames) {
+        var assetPath = tryGetAssetPath(assetType);
+        if(StringUtils.isNotEmpty(assetPath)) {
+            var bytes = ArchiveUtil.readEntry(zipFile, assetPath);
+            var lastSegmentIndex = assetPath.lastIndexOf('/');
+            var lastSegment = assetPath.substring(lastSegmentIndex + 1);
+            return Pair.of(bytes, lastSegment);
+        } else {
+            readInputStream();
+            return readFromAlternateNames(alternateNames);
         }
     }
 
@@ -440,25 +472,58 @@ public class ExtensionProcessor implements AutoCloseable {
         return null;
     }
 
+    private String tryGetAssetPath(String type) {
+        loadVsixManifest();
+        for(var asset : vsixManifest.path("Assets").path("Asset")) {
+            if(Optional.ofNullable(asset.findValue("Type")).map(JsonNode::asText).orElse("").equals(type)) {
+                return Optional.ofNullable(asset.findValue("Path"))
+                        .map(JsonNode::asText)
+                        .orElse(null);
+            }
+        }
+
+        return null;
+    }
+
     protected FileResource getIcon(ExtensionVersion extVersion) {
-        loadPackageJson();
-        var iconPath = packageJson.get("icon");
-        if (iconPath == null || !iconPath.isTextual())
+        var iconPath = tryGetAssetPath(ExtensionQueryResult.ExtensionFile.FILE_ICON);
+        if(StringUtils.isEmpty(iconPath)) {
+            loadPackageJson();
+            var iconPathNode = packageJson.get("icon");
+            iconPath = iconPathNode != null && iconPathNode.isTextual()
+                    ? "extension/" + iconPathNode.asText().replace('\\', '/')
+                    : null;
+        }
+
+        if (iconPath == null) {
             return null;
-        var iconPathStr = iconPath.asText().replace('\\', '/');
-        var bytes = ArchiveUtil.readEntry(zipFile, "extension/" + iconPathStr);
-        if (bytes == null)
+        }
+
+        var bytes = ArchiveUtil.readEntry(zipFile, iconPath);
+        if (bytes == null) {
             return null;
+        }
+
         var icon = new FileResource();
         icon.setExtension(extVersion);
-        var fileNameIndex = iconPathStr.lastIndexOf('/');
-        if (fileNameIndex >= 0)
-            icon.setName(iconPathStr.substring(fileNameIndex + 1));
-        else
-            icon.setName(iconPathStr);
+        var fileNameIndex = iconPath.lastIndexOf('/');
+        var iconName = fileNameIndex >= 0
+                ? iconPath.substring(fileNameIndex + 1)
+                : iconPath;
+
+        icon.setName(iconName);
         icon.setType(FileResource.ICON);
         icon.setContent(bytes);
         return icon;
     }
 
+    public FileResource getVsixManifest(ExtensionVersion extVersion) {
+        readInputStream();
+        var vsixManifest = new FileResource();
+        vsixManifest.setExtension(extVersion);
+        vsixManifest.setName(VSIX_MANIFEST);
+        vsixManifest.setType(FileResource.VSIXMANIFEST);
+        vsixManifest.setContent(ArchiveUtil.readEntry(zipFile, VSIX_MANIFEST));
+        return vsixManifest;
+    }
 }

@@ -9,26 +9,13 @@
  ********************************************************************************/
 package org.eclipse.openvsx;
 
-import static org.eclipse.openvsx.cache.CacheService.CACHE_EXTENSION_JSON;
-import static org.eclipse.openvsx.cache.CacheService.GENERATOR_EXTENSION_JSON;
-import static org.eclipse.openvsx.entities.FileResource.*;
-import static org.eclipse.openvsx.util.UrlUtil.createApiUrl;
-import static org.eclipse.openvsx.util.UrlUtil.createApiVersionUrl;
-
-import java.io.InputStream;
-import java.util.*;
-import java.util.stream.Collectors;
-
-import javax.persistence.EntityManager;
-import javax.transaction.Transactional;
-
-import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
-
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.eclipse.EclipseService;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.json.*;
+import org.eclipse.openvsx.publish.ExtensionVersionIntegrityService;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.ExtensionSearch;
 import org.eclipse.openvsx.search.ISearchService;
@@ -40,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.http.HttpStatus;
@@ -48,10 +36,21 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import java.io.InputStream;
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static org.eclipse.openvsx.cache.CacheService.*;
+import static org.eclipse.openvsx.entities.FileResource.*;
+import static org.eclipse.openvsx.util.UrlUtil.createApiUrl;
+import static org.eclipse.openvsx.util.UrlUtil.createApiVersionUrl;
+
 @Component
 public class LocalRegistryService implements IExtensionRegistry {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(LocalRegistryService.class);
+    protected final Logger logger = LoggerFactory.getLogger(LocalRegistryService.class);
 
     @Autowired
     EntityManager entityManager;
@@ -83,6 +82,9 @@ public class LocalRegistryService implements IExtensionRegistry {
     @Autowired
     CacheService cache;
 
+    @Autowired
+    ExtensionVersionIntegrityService integrityService;
+
     @Override
     public NamespaceJson getNamespace(String namespaceName) {
         var namespace = repositories.findNamespace(namespaceName);
@@ -102,16 +104,67 @@ public class LocalRegistryService implements IExtensionRegistry {
     }
 
     @Override
+    @Cacheable(value = CACHE_EXTENSION_JSON, keyGenerator = GENERATOR_EXTENSION_JSON)
     public ExtensionJson getExtension(String namespace, String extensionName, String targetPlatform) {
-        return getExtension(namespace, extensionName, targetPlatform, "latest");
+        return getExtension(namespace, extensionName, targetPlatform, VersionAlias.LATEST);
     }
 
     @Override
     @Cacheable(value = CACHE_EXTENSION_JSON, keyGenerator = GENERATOR_EXTENSION_JSON)
     public ExtensionJson getExtension(String namespace, String extensionName, String targetPlatform, String version) {
         var extVersion = findExtensionVersion(namespace, extensionName, targetPlatform, version);
-        var json = toExtensionVersionJson(extVersion, targetPlatform, true, false);
+        var json = toExtensionVersionJson(extVersion, targetPlatform, true);
         json.downloads = getDownloads(extVersion.getExtension(), targetPlatform, extVersion.getVersion());
+        return json;
+    }
+
+    @Override
+    public VersionsJson getVersions(String namespace, String extension, String targetPlatform, int size, int offset) {
+        var pageRequest = PageRequest.of((offset/size), size);
+        var page = targetPlatform == null
+                ? repositories.findActiveVersionStringsSorted(namespace, extension, pageRequest)
+                : repositories.findActiveVersionStringsSorted(namespace, extension, targetPlatform, pageRequest);
+
+        var json = new VersionsJson();
+        json.offset = (int) page.getPageable().getOffset();
+        json.totalSize = (int) page.getTotalElements();
+        json.versions = page.get()
+                .collect(Collectors.toMap(
+                        version -> version,
+                        version -> UrlUtil.createApiVersionUrl(UrlUtil.getBaseUrl(), namespace, extension, targetPlatform, version),
+                        (v1, v2) -> v1,
+                        LinkedHashMap::new
+                ));
+
+        return json;
+    }
+
+    @Override
+    public VersionReferencesJson getVersionReferences(String namespace, String extension, String targetPlatform, int size, int offset) {
+        var pageRequest = PageRequest.of((offset/size), size);
+        var page = targetPlatform == null
+                ? repositories.findActiveVersionsSorted(namespace, extension, pageRequest)
+                : repositories.findActiveVersionsSorted(namespace, extension, targetPlatform, pageRequest);
+
+        var json = new VersionReferencesJson();
+        json.offset = (int) page.getPageable().getOffset();
+        json.totalSize = (int) page.getTotalElements();
+        json.versions = page.get()
+                .map(extVersion -> {
+                    var versionRef = new VersionReferenceJson();
+                    versionRef.version = extVersion.getVersion();
+                    versionRef.targetPlatform = extVersion.getTargetPlatform();
+                    versionRef.engines = extVersion.getEnginesMap();
+                    versionRef.url = UrlUtil.createApiVersionUrl(UrlUtil.getBaseUrl(), extVersion);
+                    versionRef.files = storageUtil.getFileUrls(extVersion, UrlUtil.getBaseUrl(), withFileTypes(DOWNLOAD));
+                    if(versionRef.files.containsKey(DOWNLOAD_SIG)) {
+                        versionRef.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
+                    }
+
+                    return versionRef;
+                })
+                .collect(Collectors.toList());
+
         return json;
     }
 
@@ -130,7 +183,7 @@ public class LocalRegistryService implements IExtensionRegistry {
                     var download = files != null ? files.get(DOWNLOAD) : null;
                     if(download == null) {
                         var e = ev.getExtension();
-                        LOGGER.warn("Could not find download for: {}.{}-{}@{}", e.getNamespace().getName(), e.getName(), ev.getVersion(), ev.getTargetPlatform());
+                        logger.warn("Could not find download for: {}", NamingUtil.toLogFormat(ev));
                         return null;
                     } else {
                         return new AbstractMap.SimpleEntry<>(ev.getTargetPlatform(), download);
@@ -146,9 +199,9 @@ public class LocalRegistryService implements IExtensionRegistry {
             throw new NotFoundException();
 
         ExtensionVersion extVersion;
-        if("latest".equals(version)) {
+        if(VersionAlias.LATEST.equals(version)) {
             extVersion = versions.getLatestTrxn(extension, targetPlatform, false, true);
-        } else if("pre-release".equals(version)) {
+        } else if(VersionAlias.PRE_RELEASE.equals(version)) {
             extVersion = versions.getLatestTrxn(extension, targetPlatform, true, true);
         } else {
             var stream = versions.getVersionsTrxn(extension).stream()
@@ -157,7 +210,7 @@ public class LocalRegistryService implements IExtensionRegistry {
 
             stream = targetPlatform != null
                     ? stream.filter(ev -> ev.getTargetPlatform().equals(targetPlatform))
-                    : stream.sorted(Comparator.<ExtensionVersion, Boolean>comparing(TargetPlatform::isUniversal).thenComparing(ExtensionVersion::getTargetPlatform));
+                    : stream.sorted(Comparator.<ExtensionVersion, Boolean>comparing(ExtensionVersion::isUniversalTargetPlatform).thenComparing(ExtensionVersion::getTargetPlatform));
 
             extVersion = stream.findFirst().orElse(null);
         }
@@ -172,13 +225,22 @@ public class LocalRegistryService implements IExtensionRegistry {
     @Override
     public ResponseEntity<byte[]> getFile(String namespace, String extensionName, String targetPlatform, String version, String fileName) {
         var extVersion = findExtensionVersion(namespace, extensionName, targetPlatform, version);
-        var resource = repositories.findFileByName(extVersion, fileName);
+        var resource = isType(fileName) ? repositories.findFileByType(extVersion, fileName.toLowerCase()) : repositories.findFileByName(extVersion, fileName);
         if (resource == null)
             throw new NotFoundException();
         if (resource.getType().equals(DOWNLOAD))
             storageUtil.increaseDownloadCount(resource);
 
         return storageUtil.getFileResponse(resource);
+    }
+
+    public boolean isType (String fileName){
+        var expectedTypes = new ArrayList<>(List.of(MANIFEST, README, LICENSE, ICON, DOWNLOAD, DOWNLOAD_SHA256, CHANGELOG, VSIXMANIFEST));
+        if(integrityService.isEnabled()) {
+            expectedTypes.add(DOWNLOAD_SIG);
+        }
+
+        return expectedTypes.stream().anyMatch(fileName::equalsIgnoreCase);
     }
 
     @Override
@@ -206,95 +268,62 @@ public class LocalRegistryService implements IExtensionRegistry {
         }
 
         var searchHits = search.search(options);
-        json.extensions = toSearchEntries(searchHits, options);
-        json.offset = options.requestedOffset;
-        json.totalSize = (int) searchHits.getTotalHits();
+        if(searchHits.hasSearchHits()) {
+            json.extensions = toSearchEntries(searchHits, options);
+            json.offset = options.requestedOffset;
+            json.totalSize = (int) searchHits.getTotalHits();
+        } else {
+            json.extensions = Collections.emptyList();
+        }
+
         return json;
     }
 
     @Override
-    public QueryResultJson query(QueryParamJson param) {
-        if (!Strings.isNullOrEmpty(param.extensionId)) {
-            var split = param.extensionId.split("\\.");
+    public QueryResultJson query(QueryRequest request) {
+        if (!StringUtils.isEmpty(request.extensionId)) {
+            var split = request.extensionId.split("\\.");
             if (split.length != 2 || split[0].isEmpty() || split[1].isEmpty())
                 throw new ErrorResultException("The 'extensionId' parameter must have the format 'namespace.extension'.");
-            if (!Strings.isNullOrEmpty(param.namespaceName) && !param.namespaceName.equals(split[0]))
+            if (!StringUtils.isEmpty(request.namespaceName) && !request.namespaceName.equals(split[0]))
                 throw new ErrorResultException("Conflicting parameters 'extensionId' and 'namespaceName'");
-            if (!Strings.isNullOrEmpty(param.extensionName) && !param.extensionName.equals(split[1]))
+            if (!StringUtils.isEmpty(request.extensionName) && !request.extensionName.equals(split[1]))
                 throw new ErrorResultException("Conflicting parameters 'extensionId' and 'extensionName'");
-            param.namespaceName = split[0];
-            param.extensionName = split[1];
+            request.namespaceName = split[0];
+            request.extensionName = split[1];
+            request.extensionId = null;
         }
 
-        List<ExtensionVersion> extensionVersions = new ArrayList<>();
-        var targetPlatform = TargetPlatform.isValid(param.targetPlatform) ? param.targetPlatform : null;
-
-        // Add extension by UUID (public_id)
-        if (!Strings.isNullOrEmpty(param.extensionUuid)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionPublicId(targetPlatform, param.extensionUuid));
-        }
-        // Add extensions by namespace UUID (public_id)
-        if (!Strings.isNullOrEmpty(param.namespaceUuid)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByNamespacePublicId(targetPlatform, param.namespaceUuid));
+        if(!TargetPlatform.isValid(request.targetPlatform)) {
+            request.targetPlatform = null;
         }
 
-        // Add extension by namespace and name
-        if (!Strings.isNullOrEmpty(param.namespaceName) && !Strings.isNullOrEmpty(param.extensionName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionName(targetPlatform, param.extensionName, param.namespaceName));
-        // Add extensions by namespace
-        } else if (!Strings.isNullOrEmpty(param.namespaceName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByNamespaceName(targetPlatform, param.namespaceName));
-        // Add extensions by name
-        } else if (!Strings.isNullOrEmpty(param.extensionName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionName(targetPlatform, param.extensionName));
-        }
-
-        extensionVersions = extensionVersions.stream()
-                .collect(Collectors.groupingBy(ExtensionVersion::getId))
-                .values()
-                .stream()
-                .map(l -> l.get(0))
-                .collect(Collectors.toList());
-
+        var extensionVersionsPage = repositories.findActiveVersions(request);
+        var extensionVersions = extensionVersionsPage.getContent();
         var extensionIds = extensionVersions.stream()
-                .map(ExtensionVersion::getExtension)
-                .map(Extension::getId)
+                .map(ev -> ev.getExtension().getId())
                 .collect(Collectors.toSet());
 
-        var reviewCounts = getReviewCounts(extensionIds);
-        var versionStrings = getVersionStrings(extensionVersions);
+        var reviewCounts = getReviewCounts(extensionVersions);
+        var versionStrings = getVersionStrings(extensionIds, request.targetPlatform);
         var latestVersions = getLatestVersions(extensionVersions);
         var latestPreReleases = getLatestVersions(extensionVersions, true);
         var previewsByExtensionId = getPreviews(extensionIds);
         var fileResourcesByExtensionVersionId = getFileResources(extensionVersions);
         var membershipsByNamespaceId = getMemberships(extensionVersions);
 
-        // Add a specific version of an extension
-        if (!Strings.isNullOrEmpty(param.namespaceName) && !Strings.isNullOrEmpty(param.extensionName)
-                && !Strings.isNullOrEmpty(param.extensionVersion) && !param.includeAllVersions) {
-            extensionVersions = extensionVersions.stream()
-                    .filter(ev -> ev.getVersion().equals(param.extensionVersion))
-                    .filter(ev -> ev.getExtension().getName().equals(param.extensionName))
-                    .filter(ev -> ev.getExtension().getNamespace().getName().equals(param.namespaceName))
-                    .collect(Collectors.toList());
-        }
-        // Only add latest version of an extension
-        if(Strings.isNullOrEmpty(param.extensionVersion) && !param.includeAllVersions) {
-            extensionVersions = new ArrayList<>(latestVersions.values());
-        }
-
         var result = new QueryResultJson();
+        result.offset = (int) extensionVersionsPage.getPageable().getOffset();
+        result.totalSize = (int) extensionVersionsPage.getTotalElements();
         result.extensions = extensionVersions.stream()
-                .filter(ev -> addToResult(ev, param))
-                .sorted(getExtensionVersionComparator())
                 .map(ev -> {
                     var latest = latestVersions.get(getLatestVersionKey(ev));
                     var latestPreRelease = latestPreReleases.get(getLatestVersionKey(ev));
-                    var reviewCount = reviewCounts.getOrDefault(ev.getExtension().getId(), 0);
+                    var reviewCount = reviewCounts.getOrDefault(ev.getExtension().getId(), 0L);
                     var preview = previewsByExtensionId.get(ev.getExtension().getId());
                     var versions = versionStrings.get(ev.getExtension().getId());
                     var fileResources = fileResourcesByExtensionVersionId.getOrDefault(ev.getId(), Collections.emptyList());
-                    return toExtensionVersionJson(ev, latest, latestPreRelease, reviewCount, preview, versions, targetPlatform, fileResources, membershipsByNamespaceId);
+                    return toExtensionVersionJson(ev, latest, latestPreRelease, reviewCount, preview, versions, request.targetPlatform, fileResources, membershipsByNamespaceId);
                 })
                 .collect(Collectors.toList());
 
@@ -302,115 +331,157 @@ public class LocalRegistryService implements IExtensionRegistry {
     }
 
     @Override
-    public QueryResultJson queryV2(QueryParamJsonV2 param) {
-        if (!Strings.isNullOrEmpty(param.extensionId)) {
-            var split = param.extensionId.split("\\.");
+    public QueryResultJson queryV2(QueryRequestV2 request) {
+        if (!StringUtils.isEmpty(request.extensionId)) {
+            var split = request.extensionId.split("\\.");
             if (split.length != 2 || split[0].isEmpty() || split[1].isEmpty())
                 throw new ErrorResultException("The 'extensionId' parameter must have the format 'namespace.extension'.");
-            if (!Strings.isNullOrEmpty(param.namespaceName) && !param.namespaceName.equals(split[0]))
+            if (!StringUtils.isEmpty(request.namespaceName) && !request.namespaceName.equals(split[0]))
                 throw new ErrorResultException("Conflicting parameters 'extensionId' and 'namespaceName'");
-            if (!Strings.isNullOrEmpty(param.extensionName) && !param.extensionName.equals(split[1]))
+            if (!StringUtils.isEmpty(request.extensionName) && !request.extensionName.equals(split[1]))
                 throw new ErrorResultException("Conflicting parameters 'extensionId' and 'extensionName'");
-            param.namespaceName = split[0];
-            param.extensionName = split[1];
+            request.namespaceName = split[0];
+            request.extensionName = split[1];
+            request.extensionId = null;
         }
 
-        List<ExtensionVersion> extensionVersions = new ArrayList<>();
-        var targetPlatform = TargetPlatform.isValid(param.targetPlatform) ? param.targetPlatform : null;
-
-        // Add extension by UUID (public_id)
-        if (!Strings.isNullOrEmpty(param.extensionUuid)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionPublicId(targetPlatform, param.extensionUuid));
+        if(!TargetPlatform.isValid(request.targetPlatform)) {
+            request.targetPlatform = null;
         }
-        // Add extensions by namespace UUID (public_id)
-        if (!Strings.isNullOrEmpty(param.namespaceUuid)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByNamespacePublicId(targetPlatform, param.namespaceUuid));
+        // Revert to default includeAllVersions value when extensionVersion is set
+        if(!StringUtils.isEmpty(request.extensionVersion) && request.includeAllVersions.equals("true")) {
+            request.includeAllVersions = "links";
         }
 
-        // Add extension by namespace and name
-        if (!Strings.isNullOrEmpty(param.namespaceName) && !Strings.isNullOrEmpty(param.extensionName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionName(targetPlatform, param.extensionName, param.namespaceName));
-        // Add extensions by namespace
-        } else if (!Strings.isNullOrEmpty(param.namespaceName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByNamespaceName(targetPlatform, param.namespaceName));
-        // Add extensions by name
-        } else if (!Strings.isNullOrEmpty(param.extensionName)) {
-            extensionVersions.addAll(repositories.findActiveExtensionVersionsByExtensionName(targetPlatform, param.extensionName));
-        }
+        var queryRequest = new QueryRequest();
+        queryRequest.namespaceName = request.namespaceName;
+        queryRequest.extensionName = request.extensionName;
+        queryRequest.extensionVersion = request.extensionVersion;
+        queryRequest.extensionUuid = request.extensionUuid;
+        queryRequest.namespaceUuid = request.namespaceUuid;
+        queryRequest.includeAllVersions = request.includeAllVersions.equals("true");
+        queryRequest.targetPlatform = request.targetPlatform;
+        queryRequest.size = request.size;
+        queryRequest.offset = request.offset;
 
-        extensionVersions = extensionVersions.stream()
-                .collect(Collectors.groupingBy(ExtensionVersion::getId))
-                .values()
-                .stream()
-                .map(l -> l.get(0))
-                .collect(Collectors.toList());
-
+        var extensionVersionsPage = repositories.findActiveVersions(queryRequest);
+        var extensionVersions = extensionVersionsPage.getContent();
         var extensionIds = extensionVersions.stream()
                 .map(ev -> ev.getExtension().getId())
                 .collect(Collectors.toSet());
 
-        var reviewCounts = getReviewCounts(extensionIds);
-        var versionStrings = getVersionStrings(extensionVersions);
+        var reviewCounts = getReviewCounts(extensionVersions);
+        var addAllVersions = request.includeAllVersions.equals("links");
+        var versionStrings = addAllVersions ? getVersionStrings(extensionIds, request.targetPlatform) : null;
+        var latestGlobalVersions = addAllVersions ? getLatestGlobalVersions(extensionVersions) : null;
+        var latestGlobalPreReleases = addAllVersions ? getLatestGlobalVersions(extensionVersions, true) : null;
+
         var latestVersions = getLatestVersions(extensionVersions);
         var latestPreReleases = getLatestVersions(extensionVersions, true);
-        var latestGlobalVersions = getLatestGlobalVersions(extensionVersions);
-        var latestGlobalPreReleases = getLatestGlobalVersions(extensionVersions, true);
         var previewsByExtensionId = getPreviews(extensionIds);
         var fileResourcesByExtensionVersionId = getFileResources(extensionVersions);
         var membershipsByNamespaceId = getMemberships(extensionVersions);
 
-        // Add a specific version of an extension
-        if (!Strings.isNullOrEmpty(param.namespaceName) && !Strings.isNullOrEmpty(param.extensionName)
-                && !Strings.isNullOrEmpty(param.extensionVersion) && !param.includeAllVersions.equals("true")) {
-            extensionVersions = extensionVersions.stream()
-                    .filter(ev -> ev.getVersion().equals(param.extensionVersion))
-                    .filter(ev -> ev.getExtension().getName().equals(param.extensionName))
-                    .filter(ev -> ev.getExtension().getNamespace().getName().equals(param.namespaceName))
-                    .collect(Collectors.toList());
-        }
-        // Only add latest version of an extension
-        if(Strings.isNullOrEmpty(param.extensionVersion) && !param.includeAllVersions.equals("true")) {
-            extensionVersions = new ArrayList<>(latestVersions.values());
-        }
-        // Revert to default includeAllVersions value when extensionVersion is set
-        if(!Strings.isNullOrEmpty(param.extensionVersion) && param.includeAllVersions.equals("true")) {
-            param.includeAllVersions = "links";
-        }
-
-        var addAllVersions = param.includeAllVersions.equals("links");
         var result = new QueryResultJson();
+        result.offset = (int) extensionVersionsPage.getPageable().getOffset();
+        result.totalSize = (int) extensionVersionsPage.getTotalElements();
         result.extensions = extensionVersions.stream()
-                .filter(ev -> addToResultV2(ev, param))
-                .sorted(getExtensionVersionComparator())
                 .map(ev -> {
                     var latest = latestVersions.get(getLatestVersionKey(ev));
                     var latestPreRelease = latestPreReleases.get(getLatestVersionKey(ev));
-                    var reviewCount = reviewCounts.getOrDefault(ev.getExtension().getId(), 0);
+                    var reviewCount = reviewCounts.getOrDefault(ev.getExtension().getId(), 0L);
                     var preview = previewsByExtensionId.get(ev.getExtension().getId());
+                    var fileResources = fileResourcesByExtensionVersionId.getOrDefault(ev.getId(), Collections.emptyList());
                     var globalLatest = addAllVersions ? latestGlobalVersions.get(ev.getExtension().getId()) : null;
                     var globalLatestPreRelease = addAllVersions ? latestGlobalPreReleases.get(ev.getExtension().getId()) : null;
                     var versions = addAllVersions ? versionStrings.get(ev.getExtension().getId()) : null;
-                    var fileResources = fileResourcesByExtensionVersionId.getOrDefault(ev.getId(), Collections.emptyList());
-                    return toExtensionVersionJsonV2(ev, latest, latestPreRelease, globalLatest, globalLatestPreRelease, reviewCount, preview, versions, targetPlatform, fileResources, membershipsByNamespaceId);
+
+                    return toExtensionVersionJsonV2(ev, latest, latestPreRelease, globalLatest, globalLatestPreRelease, reviewCount, preview, versions, request.targetPlatform, fileResources, membershipsByNamespaceId);
                 })
                 .collect(Collectors.toList());
 
         return result;
     }
 
-    private Map<Long, Integer> getReviewCounts(Collection<Long> extensionIds) {
-        return !extensionIds.isEmpty()
-                ? repositories.findActiveReviewCountsByExtensionId(extensionIds)
-                : Collections.emptyMap();
+    @Override
+    @Transactional
+    @Cacheable(CACHE_NAMESPACE_DETAILS_JSON)
+    public NamespaceDetailsJson getNamespaceDetails(String namespaceName) {
+        var namespace = repositories.findNamespace(namespaceName);
+        if (namespace == null) {
+            throw new NotFoundException();
+        }
+
+        var json = namespace.toNamespaceDetailsJson();
+        json.verified = repositories.countMemberships(namespace, NamespaceMembership.ROLE_OWNER) > 0;
+        json.logo = namespace.getLogoStorageType() != null
+                ? storageUtil.getNamespaceLogoLocation(namespace).toString()
+                : null;
+
+        json.extensions = repositories.findActiveExtensions(namespace).stream()
+                .sorted(Comparator.comparingLong(Extension::getDownloadCount).reversed())
+                .map(this::toSearchEntryJson)
+                .collect(Collectors.toList());
+
+        return json;
     }
 
-    private Map<Long, Set<String>> getVersionStrings(List<ExtensionVersion> extensionVersions) {
+    private SearchEntryJson toSearchEntryJson(Extension extension) {
+        var serverUrl = UrlUtil.getBaseUrl();
+        var extVersion = versions.getLatest(extension, null, false, true);
+        var entry = extVersion.toSearchEntryJson();
+        entry.url = createApiUrl(serverUrl, "api", entry.namespace, entry.name);
+        entry.files = storageUtil.getFileUrls(extVersion, serverUrl, withFileTypes(DOWNLOAD, ICON));
+        if(entry.files.containsKey(DOWNLOAD_SIG)) {
+            entry.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
+        }
+
+        return entry;
+    }
+
+    private String[] withFileTypes(String... types) {
+        var typesList = new ArrayList<>(List.of(types));
+        if(typesList.contains(DOWNLOAD)) {
+            typesList.add(DOWNLOAD_SHA256);
+            if(integrityService.isEnabled()) {
+                typesList.add(DOWNLOAD_SIG);
+            }
+        }
+
+        return typesList.toArray(String[]::new);
+    }
+
+    @Override
+    public ResponseEntity<byte[]> getNamespaceLogo(String namespaceName, String fileName) {
+        if(fileName == null) {
+            fileName = "";
+        }
+
+        var namespace = repositories.findNamespace(namespaceName);
+        if(namespace == null || !fileName.equals(namespace.getLogoName())) {
+            throw new NotFoundException();
+        }
+
+        return storageUtil.getNamespaceLogo(namespace);
+    }
+
+    private Map<Long, Long> getReviewCounts(List<ExtensionVersion> extensionVersions) {
         if(extensionVersions.isEmpty()) {
             return Collections.emptyMap();
         }
 
         return extensionVersions.stream()
-                .collect(Collectors.groupingBy(ev -> ev.getExtension().getId(), Collectors.mapping(ExtensionVersion::getVersion, Collectors.toSet())));
+                .map(ExtensionVersion::getExtension)
+                .filter(e -> e.getReviewCount() != null)
+                .collect(Collectors.toMap(Extension::getId, Extension::getReviewCount, (reviews1, reviews2) -> reviews1));
+    }
+
+    private Map<Long, List<String>> getVersionStrings(Set<Long> extensionIds, String targetPlatform) {
+        if(extensionIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        return repositories.findActiveVersionStringsSorted(extensionIds, targetPlatform);
     }
 
     private Map<String, ExtensionVersion> getLatestVersions(List<ExtensionVersion> extensionVersions) {
@@ -459,7 +530,7 @@ public class LocalRegistryService implements IExtensionRegistry {
             return Collections.emptyMap();
         }
 
-        var fileTypes = List.of(DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG);
+        var fileTypes = List.of(withFileTypes(DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG, VSIXMANIFEST));
         var extensionVersionIds = extensionVersions.stream()
                 .map(ExtensionVersion::getId)
                 .collect(Collectors.toSet());
@@ -481,45 +552,6 @@ public class LocalRegistryService implements IExtensionRegistry {
 
         return repositories.findNamespaceMemberships(namespaceIds).stream()
                 .collect(Collectors.groupingBy(nm -> nm.getNamespace().getId()));
-    }
-
-    private Comparator<ExtensionVersion> getExtensionVersionComparator() {
-        return Comparator.<ExtensionVersion, String>comparing(ev -> ev.getExtension().getName())
-                .thenComparing(ExtensionVersion.SORT_COMPARATOR);
-    }
-
-    private boolean addToResult(ExtensionVersion extVersion, QueryParamJson param) {
-        return addToResult(extVersion, param.extensionVersion, param.extensionName, param.namespaceName, param.extensionUuid, param.namespaceUuid);
-    }
-
-    private boolean addToResultV2(ExtensionVersion extVersion, QueryParamJsonV2 param) {
-        return addToResult(extVersion, param.extensionVersion, param.extensionName, param.namespaceName, param.extensionUuid, param.namespaceUuid);
-    }
-
-    private boolean addToResult(
-            ExtensionVersion extVersion,
-            String extensionVersion,
-            String extensionName,
-            String namespaceName,
-            String extensionUuid,
-            String namespaceUuid
-    ) {
-        if (mismatch(extVersion.getVersion(), extensionVersion))
-            return false;
-        var extension = extVersion.getExtension();
-        if (mismatch(extension.getName(), extensionName))
-            return false;
-        var namespace = extension.getNamespace();
-        if (mismatch(namespace.getName(), namespaceName))
-            return false;
-
-        return !mismatch(extension.getPublicId(), extensionUuid) && !mismatch(namespace.getPublicId(), namespaceUuid);
-    }
-
-    private static boolean mismatch(String s1, String s2) {
-        return s1 != null && s2 != null
-                && !s1.isEmpty() && !s2.isEmpty()
-                && !s1.equalsIgnoreCase(s2);
     }
 
     @Transactional(rollbackOn = ErrorResultException.class)
@@ -579,24 +611,13 @@ public class LocalRegistryService implements IExtensionRegistry {
         return ResultJson.success("Valid token");
     }
 
-    @Retryable(value = { DataIntegrityViolationException.class })
-    @Transactional(rollbackOn = ErrorResultException.class)
     public ExtensionJson publish(InputStream content, UserData user) throws ErrorResultException {
-        var token = new PersonalAccessToken();
-        token.setDescription("One time use publish token");
-        token.setValue(users.generateTokenValue());
-        token.setCreatedTimestamp(TimeUtil.getCurrentUTC());
-        token.setAccessedTimestamp(token.getCreatedTimestamp());
-        token.setUser(user);
-        token.setActive(true);
-        entityManager.persist(token);
-
-        var json = publish(content, token.getValue());
-        token.setActive(false);
+        var token = users.createAccessToken(user, "One time use publish token");
+        var json = publish(content, token.value);
+        users.deleteAccessToken(user, token.id);
         return json;
     }
 
-    @Transactional(rollbackOn = ErrorResultException.class)
     public ExtensionJson publish(InputStream content, String tokenValue) throws ErrorResultException {
         var token = users.useAccessToken(tokenValue);
         if (token == null || token.getUser() == null) {
@@ -607,7 +628,7 @@ public class LocalRegistryService implements IExtensionRegistry {
         eclipse.checkPublisherAgreement(token.getUser());
 
         var extVersion = extensions.publishVersion(content, token);
-        var json = toExtensionVersionJson(extVersion, null, true, true);
+        var json = toExtensionVersionJson(extVersion, null, true);
         json.success = "It can take a couple minutes before the extension version is available";
 
         var sameVersions = repositories.findVersions(extVersion.getVersion(), extVersion.getExtension());
@@ -618,8 +639,7 @@ public class LocalRegistryService implements IExtensionRegistry {
             var semver = extVersion.getSemanticVersion();
             var newVersion = String.join(".", String.valueOf(semver.getMajor()), String.valueOf(semver.getMinor() + 1), "0");
 
-            json.warning = "A " + existingRelease + " already exists for " +
-                    extension.getNamespace().getName() + "." + extension.getName() + "-" + extVersion.getVersion() + ".\n" +
+            json.warning = "A " + existingRelease + " already exists for " + NamingUtil.toLogFormat(extension.getNamespace().getName(), extension.getName(), extVersion.getVersion()) + ".\n" +
                     "To prevent update conflicts, we recommend that this " + thisRelease + " uses " + newVersion + " as its version instead.";
         }
 
@@ -634,7 +654,8 @@ public class LocalRegistryService implements IExtensionRegistry {
         }
         var extension = repositories.findExtension(extensionName, namespace);
         if (extension == null || !extension.isActive()) {
-            return ResultJson.error("Extension not found: " + namespace + "." + extensionName);
+            var extensionId = NamingUtil.toExtensionId(namespace, extensionName);
+            return ResultJson.error("Extension not found: " + extensionId);
         }
         var activeReviews = repositories.findActiveReviews(extension, user);
         if (!activeReviews.isEmpty()) {
@@ -650,10 +671,12 @@ public class LocalRegistryService implements IExtensionRegistry {
         extReview.setComment(review.comment);
         extReview.setRating(review.rating);
         entityManager.persist(extReview);
-        extension.setAverageRating(computeAverageRating(extension));
+        extension.setAverageRating(repositories.getAverageReviewRating(extension));
+        extension.setReviewCount(repositories.countActiveReviews(extension));
         search.updateSearchEntry(extension);
         cache.evictExtensionJsons(extension);
-        return ResultJson.success("Added review for " + extension.getNamespace().getName() + "." + extension.getName());
+        cache.evictLatestExtensionVersion(extension);
+        return ResultJson.success("Added review for " + NamingUtil.toExtensionId(extension));
     }
 
     @Transactional(rollbackOn = ResponseStatusException.class)
@@ -664,7 +687,7 @@ public class LocalRegistryService implements IExtensionRegistry {
         }
         var extension = repositories.findExtension(extensionName, namespace);
         if (extension == null || !extension.isActive()) {
-            return ResultJson.error("Extension not found: " + namespace + "." + extensionName);
+            return ResultJson.error("Extension not found: " + NamingUtil.toExtensionId(namespace, extensionName));
         }
         var activeReviews = repositories.findActiveReviews(extension, user);
         if (activeReviews.isEmpty()) {
@@ -674,46 +697,49 @@ public class LocalRegistryService implements IExtensionRegistry {
         for (var extReview : activeReviews) {
             extReview.setActive(false);
         }
-        extension.setAverageRating(computeAverageRating(extension));
+
+        extension.setAverageRating(repositories.getAverageReviewRating(extension));
+        extension.setReviewCount(repositories.countActiveReviews(extension));
         search.updateSearchEntry(extension);
         cache.evictExtensionJsons(extension);
-        return ResultJson.success("Deleted review for " + extension.getNamespace().getName() + "." + extension.getName());
+        cache.evictLatestExtensionVersion(extension);
+        return ResultJson.success("Deleted review for " + NamingUtil.toExtensionId(extension));
     }
 
-    private Double computeAverageRating(Extension extension) {
-        var activeReviews = repositories.findActiveReviews(extension);
-        if (activeReviews.isEmpty()) {
-            return null;
-        }
-        long sum = 0;
-        long count = 0;
-        for (var review : activeReviews) {
-            sum += review.getRating();
-            count++;
-        }
-        return (double) sum / count;
-    }
+    private List<Extension> getExtensions(SearchHits<ExtensionSearch> searchHits) {
+        var ids = searchHits.stream()
+                .map(searchHit -> searchHit.getContent().id)
+                .collect(Collectors.toSet());
 
-    private Extension getExtension(SearchHit<ExtensionSearch> searchHit) {
-        var searchItem = searchHit.getContent();
-        var extension = entityManager.find(Extension.class, searchItem.id);
-        if (extension == null || !extension.isActive()) {
-            extension = new Extension();
-            extension.setId(searchItem.id);
-            search.removeSearchEntry(extension);
-            return null;
+        var extensions = new ArrayList<>(repositories.findExtensions(ids).toList());
+        var extensionIds = extensions.stream()
+                .map(Extension::getId)
+                .collect(Collectors.toSet());
+
+        ids.removeAll(extensionIds);
+        if(!ids.isEmpty()) {
+            search.removeSearchEntries(ids);
         }
 
-        return extension;
+        var inactiveExtensions = extensions.stream()
+                .filter(extension -> !extension.isActive())
+                .collect(Collectors.toList());
+
+        if(!inactiveExtensions.isEmpty()) {
+            var inactiveIds = inactiveExtensions.stream()
+                    .map(Extension::getId)
+                    .collect(Collectors.toList());
+
+            search.removeSearchEntries(inactiveIds);
+            extensions.removeAll(inactiveExtensions);
+        }
+
+        return extensions;
     }
 
     private List<SearchEntryJson> toSearchEntries(SearchHits<ExtensionSearch> searchHits, ISearchService.Options options) {
         var serverUrl = UrlUtil.getBaseUrl();
-        var extensions = searchHits.stream()
-                .map(this::getExtension)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toList());
-
+        var extensions = getExtensions(searchHits);
         var latestVersions = extensions.stream()
                 .map(e -> {
                     var latest = versions.getLatestTrxn(e, null, false, true);
@@ -729,21 +755,23 @@ public class LocalRegistryService implements IExtensionRegistry {
                 })
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
-        var fileUrls = storageUtil.getFileUrls(latestVersions.values(), serverUrl, DOWNLOAD, ICON);
-        searchEntries.forEach((extensionId, searchEntry) -> searchEntry.files = fileUrls.get(latestVersions.get(extensionId).getId()));
+        var fileUrls = storageUtil.getFileUrls(latestVersions.values(), serverUrl, withFileTypes(DOWNLOAD, ICON));
+        searchEntries.forEach((extensionId, searchEntry) -> {
+            var extVersion = latestVersions.get(extensionId);
+            searchEntry.files = fileUrls.get(extVersion.getId());
+            if(searchEntry.files.containsKey(DOWNLOAD_SIG)) {
+                searchEntry.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
+            }
+        });
         if (options.includeAllVersions) {
-            var allActiveVersions = repositories.findActiveVersions(extensions).stream()
-                    .sorted(ExtensionVersion.SORT_COMPARATOR)
-                    .collect(Collectors.toList());
-
-            var activeVersionsByExtensionId = allActiveVersions.stream()
-                    .collect(Collectors.groupingBy(ev -> ev.getExtension().getId()));
-
-            var versionUrls = storageUtil.getFileUrls(allActiveVersions, serverUrl, DOWNLOAD);
+            var activeVersions = repositories.findActiveVersionReferencesSorted(extensions);
+            var activeVersionsByExtensionId = activeVersions.stream().collect(Collectors.groupingBy(ev -> ev.getExtension().getId()));
+            var versionFileUrls = storageUtil.getFileUrls(activeVersions, serverUrl, withFileTypes(DOWNLOAD));
             for(var extension : extensions) {
-                var activeVersions = activeVersionsByExtensionId.get(extension.getId());
+                var extVersions = activeVersionsByExtensionId.get(extension.getId());
                 var searchEntry = searchEntries.get(extension.getId());
-                searchEntry.allVersions = getAllVersionReferences(activeVersions, versionUrls, serverUrl);
+                searchEntry.allVersions = getAllVersionReferences(extVersions, versionFileUrls, serverUrl);
+                searchEntry.allVersionsUrl = UrlUtil.createAllVersionsUrl(searchEntry.namespace, searchEntry.name, options.targetPlatform, "version-references");
             }
         }
 
@@ -753,75 +781,65 @@ public class LocalRegistryService implements IExtensionRegistry {
                 .collect(Collectors.toList());
     }
 
-    private List<SearchEntryJson.VersionReference> getAllVersionReferences(
+    private List<VersionReferenceJson> getAllVersionReferences(
             List<ExtensionVersion> extVersions,
-            Map<Long, Map<String, String>> versionUrls,
+            Map<Long, Map<String, String>> versionFileUrls,
             String serverUrl
     ) {
-        Collections.sort(extVersions, ExtensionVersion.SORT_COMPARATOR);
         return extVersions.stream().map(extVersion -> {
-            var ref = new SearchEntryJson.VersionReference();
+            var ref = new VersionReferenceJson();
             ref.version = extVersion.getVersion();
+            ref.targetPlatform = extVersion.getTargetPlatform();
             ref.engines = extVersion.getEnginesMap();
             ref.url = UrlUtil.createApiVersionUrl(serverUrl, extVersion);
-            ref.files = versionUrls.get(extVersion.getId());
+            ref.files = versionFileUrls.get(extVersion.getId());
+            if(ref.files.containsKey(DOWNLOAD_SIG)) {
+                ref.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
+            }
+
             return ref;
         }).collect(Collectors.toList());
     }
 
-    public ExtensionJson toExtensionVersionJson(ExtensionVersion extVersion, String targetPlatform, boolean onlyActive, boolean inTransaction) {
+    public ExtensionJson toExtensionVersionJson(ExtensionVersion extVersion, String targetPlatform, boolean onlyActive) {
         var extension = extVersion.getExtension();
-        var latest = inTransaction
-                ? versions.getLatest(extension, targetPlatform, false, onlyActive)
-                : versions.getLatestTrxn(extension, targetPlatform, false, onlyActive);
-        var latestPreRelease = inTransaction
-                ? versions.getLatest(extension, targetPlatform, true, onlyActive)
-                : versions.getLatestTrxn(extension, targetPlatform, true, onlyActive);
+        var latest = versions.getLatestTrxn(extension, targetPlatform, false, onlyActive);
+        var latestPreRelease = versions.getLatestTrxn(extension, targetPlatform, true, onlyActive);
 
         var json = extVersion.toExtensionJson();
-        json.preview = latest != null ? latest.isPreview() : false;
+        json.preview = latest != null && latest.isPreview();
         json.versionAlias = new ArrayList<>(2);
         if (extVersion.equals(latest))
-            json.versionAlias.add("latest");
+            json.versionAlias.add(VersionAlias.LATEST);
         if (extVersion.equals(latestPreRelease))
-            json.versionAlias.add("pre-release");
+            json.versionAlias.add(VersionAlias.PRE_RELEASE);
         json.verified = isVerified(extVersion);
         json.namespaceAccess = "restricted";
         json.unrelatedPublisher = !json.verified;
-        json.reviewCount = repositories.countActiveReviews(extension);
+        json.reviewCount = Optional.ofNullable(extension.getReviewCount()).orElse(0L);
         var serverUrl = UrlUtil.getBaseUrl();
         json.namespaceUrl = createApiUrl(serverUrl, "api", json.namespace);
         json.reviewsUrl = createApiUrl(serverUrl, "api", json.namespace, json.name, "reviews");
 
-        json.allVersions = Maps.newLinkedHashMap();
-        var versionBaseUrl = UrlUtil.createApiVersionBaseUrl(serverUrl, json.namespace, json.name, targetPlatform);
+        var allVersions = new ArrayList<String>();
         if (latest != null)
-            json.allVersions.put("latest", createApiUrl(versionBaseUrl,"latest"));
+            allVersions.add(VersionAlias.LATEST);
         if (latestPreRelease != null)
-            json.allVersions.put("pre-release", createApiUrl(versionBaseUrl, "pre-release"));
+            allVersions.add(VersionAlias.PRE_RELEASE);
 
-        var extVersions = inTransaction ? extension.getVersions() : versions.getVersionsTrxn(extension);
-        if(extVersions != null) {
-            var allVersionsStream = extVersions.stream();
-            if (targetPlatform != null) {
-                allVersionsStream = allVersionsStream.filter(ev -> ev.getTargetPlatform().equals(targetPlatform));
-            }
-            if (onlyActive) {
-                allVersionsStream = allVersionsStream.filter(ExtensionVersion::isActive);
-            }
-
-            allVersionsStream
-                    .collect(Collectors.groupingBy(v -> v.getVersion()))
-                    .entrySet()
-                    .stream()
-                    .map(e -> e.getValue().get(0))
-                    .sorted(ExtensionVersion.SORT_COMPARATOR)
-                    .map(v -> new AbstractMap.SimpleEntry<>(v.getVersion(), createApiUrl(versionBaseUrl, v.getVersion())))
-                    .forEach(e -> json.allVersions.put(e.getKey(), e.getValue()));
+        var versionBaseUrl = UrlUtil.createApiVersionBaseUrl(serverUrl, json.namespace, json.name, targetPlatform);
+        allVersions.addAll(repositories.findVersionStringsSorted(extension, targetPlatform, onlyActive));
+        json.allVersionsUrl = UrlUtil.createAllVersionsUrl(json.namespace, json.name, targetPlatform, "versions");
+        json.allVersions = Maps.newLinkedHashMapWithExpectedSize(allVersions.size());
+        for(var version : allVersions) {
+            json.allVersions.put(version, createApiUrl(versionBaseUrl, version));
         }
 
-        var fileUrls = storageUtil.getFileUrls(List.of(extVersion), serverUrl, DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG);
+        var fileUrls = storageUtil.getFileUrls(List.of(extVersion), serverUrl, withFileTypes(DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG, VSIXMANIFEST));
         json.files = fileUrls.get(extVersion.getId());
+        if(json.files.containsKey(DOWNLOAD_SIG)) {
+            json.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
+        }
         if (json.dependencies != null) {
             json.dependencies.forEach(ref -> {
                 ref.url = createApiUrl(serverUrl, "api", ref.namespace, ref.extension);
@@ -841,7 +859,7 @@ public class LocalRegistryService implements IExtensionRegistry {
             ExtensionVersion latestPreRelease,
             long reviewCount,
             boolean preview,
-            Set<String> versions,
+            List<String> versions,
             String targetPlatformParam,
             List<FileResource> resources,
             Map<Long, List<NamespaceMembership>> membershipsByNamespaceId
@@ -858,34 +876,38 @@ public class LocalRegistryService implements IExtensionRegistry {
 
         json.versionAlias = new ArrayList<>(2);
         if (extVersion.equals(latest)) {
-            json.versionAlias.add("latest");
+            json.versionAlias.add(VersionAlias.LATEST);
         }
         if (extVersion.equals(latestPreRelease)) {
-            json.versionAlias.add("pre-release");
+            json.versionAlias.add(VersionAlias.PRE_RELEASE);
         }
 
         var allVersions = new ArrayList<String>();
         if(latest != null) {
-            allVersions.add("latest");
+            allVersions.add(VersionAlias.LATEST);
         }
         if(latestPreRelease != null) {
-            allVersions.add("pre-release");
+            allVersions.add(VersionAlias.PRE_RELEASE);
         }
         if(versions != null && !versions.isEmpty()) {
             allVersions.addAll(versions);
         }
 
+        json.allVersionsUrl = UrlUtil.createAllVersionsUrl(json.namespace, json.name, targetPlatformParam, "versions");
         json.allVersions = Maps.newLinkedHashMapWithExpectedSize(allVersions.size());
         var versionBaseUrl = UrlUtil.createApiVersionBaseUrl(serverUrl, json.namespace, json.name, targetPlatformParam);
         for(var version : allVersions) {
             json.allVersions.put(version, createApiUrl(versionBaseUrl, version));
         }
 
-        json.files = Maps.newLinkedHashMapWithExpectedSize(6);
+        json.files = Maps.newLinkedHashMapWithExpectedSize(8);
         var fileBaseUrl = UrlUtil.createApiFileBaseUrl(serverUrl, json.namespace, json.name, json.targetPlatform, json.version);
         for (var resource : resources) {
             var fileUrl = UrlUtil.createApiFileUrl(fileBaseUrl, resource.getName());
             json.files.put(resource.getType(), fileUrl);
+        }
+        if(json.files.containsKey(DOWNLOAD_SIG)) {
+            json.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
         }
 
         if (json.dependencies != null) {
@@ -909,7 +931,7 @@ public class LocalRegistryService implements IExtensionRegistry {
             ExtensionVersion globalLatestPreRelease,
             long reviewCount,
             boolean preview,
-            Set<String> versions,
+            List<String> versions,
             String targetPlatformParam,
             List<FileResource> resources,
             Map<Long, List<NamespaceMembership>> membershipsByNamespaceId
@@ -927,25 +949,24 @@ public class LocalRegistryService implements IExtensionRegistry {
 
         json.versionAlias = new ArrayList<>(2);
         if (extVersion.equals(latest)) {
-            json.versionAlias.add("latest");
+            json.versionAlias.add(VersionAlias.LATEST);
         }
         if (extVersion.equals(latestPreRelease)) {
-            json.versionAlias.add("pre-release");
+            json.versionAlias.add(VersionAlias.PRE_RELEASE);
         }
 
         var allVersions = new ArrayList<String>();
         if(globalLatest != null) {
-            allVersions.add("latest");
+            allVersions.add(VersionAlias.LATEST);
         }
         if(globalLatestPreRelease != null) {
-            allVersions.add("pre-release");
+            allVersions.add(VersionAlias.PRE_RELEASE);
         }
         if(versions != null && !versions.isEmpty()) {
-            var sortedVersions = new ArrayList<>(versions);
-            sortedVersions.sort(Comparator.<String, String>comparing(v -> v).reversed());
-            allVersions.addAll(sortedVersions);
+            allVersions.addAll(versions);
         }
 
+        json.allVersionsUrl = UrlUtil.createAllVersionsUrl(json.namespace, json.name, targetPlatformParam, "versions");
         if(!allVersions.isEmpty()) {
             json.allVersions = Maps.newLinkedHashMapWithExpectedSize(allVersions.size());
             var versionBaseUrl = UrlUtil.createApiVersionBaseUrl(serverUrl, json.namespace, json.name, targetPlatformParam);
@@ -954,11 +975,14 @@ public class LocalRegistryService implements IExtensionRegistry {
             }
         }
 
-        json.files = Maps.newLinkedHashMapWithExpectedSize(6);
+        json.files = Maps.newLinkedHashMapWithExpectedSize(8);
         var fileBaseUrl = UrlUtil.createApiFileBaseUrl(serverUrl, json.namespace, json.name, json.targetPlatform, json.version);
         for (var resource : resources) {
             var fileUrl = UrlUtil.createApiFileUrl(fileBaseUrl, resource.getName());
             json.files.put(resource.getType(), fileUrl);
+        }
+        if(json.files.containsKey(DOWNLOAD_SIG)) {
+            json.files.put(PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVersion));
         }
 
         if (json.dependencies != null) {
@@ -985,8 +1009,7 @@ public class LocalRegistryService implements IExtensionRegistry {
         }
 
         var namespace = extVersion.getExtension().getNamespace();
-        return repositories.countMemberships(namespace, NamespaceMembership.ROLE_OWNER) > 0
-                && repositories.countMemberships(user, namespace) > 0;
+        return repositories.isVerified(namespace, user);
     }
 
     private boolean isVerified(ExtensionVersion extVersion, Map<Long, List<NamespaceMembership>> membershipsByNamespaceId) {
@@ -1003,5 +1026,14 @@ public class LocalRegistryService implements IExtensionRegistry {
         var memberships = membershipsByNamespaceId.get(namespace);
         return memberships.stream().anyMatch(m -> m.getRole().equalsIgnoreCase(NamespaceMembership.ROLE_OWNER))
                 && memberships.stream().anyMatch(m -> m.getUser().getId() == user.getId());
+    }
+
+    public String getPublicKey(String publicId) {
+        var keyPair = repositories.findKeyPair(publicId);
+        if(keyPair == null) {
+            throw new NotFoundException();
+        }
+
+        return keyPair.getPublicKeyText();
     }
 }

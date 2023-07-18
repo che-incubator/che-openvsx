@@ -7,7 +7,7 @@
  *
  * SPDX-License-Identifier: EPL-2.0
  ********************************************************************************/
-package org.eclipse.openvsx;
+package org.eclipse.openvsx.admin;
 
 import java.time.Period;
 import java.time.format.DateTimeParseException;
@@ -15,8 +15,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.net.URI;
 
-import com.google.common.base.Strings;
+import com.fasterxml.jackson.databind.JsonNode;
 
+import org.apache.commons.lang3.StringUtils;
+import org.eclipse.openvsx.LocalRegistryService;
 import org.eclipse.openvsx.entities.AdminStatistics;
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.PersistedLog;
@@ -37,12 +39,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import javax.transaction.Transactional;
-
 import static org.eclipse.openvsx.entities.UserData.ROLE_ADMIN;
 
 @RestController
 public class AdminAPI {
+
     @Autowired
     RepositoryService repositories;
 
@@ -92,12 +93,15 @@ public class AdminAPI {
         }
     }
 
-    private AdminStatistics getReport(String tokenValue, int year, int month) {
+    private void validateToken(String tokenValue) {
         var accessToken = repositories.findAccessToken(tokenValue);
         if(accessToken == null || !accessToken.isActive() || accessToken.getUser() == null || !ROLE_ADMIN.equals(accessToken.getUser().getRole())) {
             throw new ErrorResultException("Invalid access token", HttpStatus.FORBIDDEN);
         }
+    }
 
+    private AdminStatistics getReport(String tokenValue, int year, int month) {
+        validateToken(tokenValue);
         return admins.getAdminStatistics(year, month);
     }
 
@@ -105,7 +109,7 @@ public class AdminAPI {
         path = "/admin/stats",
         produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public ResponseEntity<StatsJson> getStats(@RequestParam("token") String tokenValue) {
+    public ResponseEntity<StatsJson> getStats() {
         try {
             admins.checkAdminUser();
 
@@ -128,7 +132,7 @@ public class AdminAPI {
             admins.checkAdminUser();
 
             Streamable<PersistedLog> logs;
-            if (Strings.isNullOrEmpty(periodString)) {
+            if (StringUtils.isEmpty(periodString)) {
                 logs = repositories.findAllPersistedLogs();
             } else {
                 try {
@@ -182,12 +186,12 @@ public class AdminAPI {
 
             var extension = repositories.findExtension(extensionName, namespaceName);
             if (extension == null) {
-                var json = ExtensionJson.error("Extension not found: " + namespaceName + "." + extensionName);
+                var json = ExtensionJson.error("Extension not found: " + NamingUtil.toExtensionId(namespaceName, extensionName));
                 return new ResponseEntity<>(json, HttpStatus.NOT_FOUND);
             }
 
             ExtensionJson json;
-            var latest = versions.getLatest(extension, null, false, false);
+            var latest = versions.getLatestTrxn(extension, null, false, false);
             if (latest == null) {
                 json = new ExtensionJson();
                 json.namespace = extension.getNamespace().getName();
@@ -195,7 +199,7 @@ public class AdminAPI {
                 json.allVersions = Collections.emptyMap();
                 json.allTargetPlatformVersions = Collections.emptyMap();
             } else {
-                json = local.toExtensionVersionJson(latest, null, false, false);
+                json = local.toExtensionVersionJson(latest, null, false);
                 json.allTargetPlatformVersions = versions.getVersionsTrxn(extension).stream()
                         .collect(Collectors.groupingBy(ExtensionVersion::getVersion, Collectors.mapping(ExtensionVersion::getTargetPlatform, Collectors.toList())));
             }
@@ -270,6 +274,21 @@ public class AdminAPI {
             return ResponseEntity.status(HttpStatus.CREATED)
                     .location(URI.create(url))
                     .body(json);
+        } catch (ErrorResultException exc) {
+            return exc.toResponseEntity();
+        }
+    }
+
+    @PostMapping(
+            path = "/admin/change-namespace",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<ResultJson> changeNamespace(@RequestBody ChangeNamespaceJson json) {
+        try {
+            admins.checkAdminUser();
+            admins.changeNamespace(json);
+            return ResponseEntity.ok(ResultJson.success("Scheduled namespace change from '" + json.oldNamespace + "' to '" + json.newNamespace + "'.\nIt can take 15 minutes to a couple hours for the change to become visible."));
         } catch (ErrorResultException exc) {
             return exc.toResponseEntity();
         }

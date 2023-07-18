@@ -9,21 +9,23 @@
  ********************************************************************************/
 package org.eclipse.openvsx.entities;
 
-import org.hibernate.annotations.Fetch;
-
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 @Entity
 public class FileResource {
 
     // Resource types
     public static final String DOWNLOAD = "download";
+    public static final String DOWNLOAD_SHA256 = "sha256";
+    public static final String DOWNLOAD_SIG = "signature";
+    public static final String PUBLIC_KEY = "publicKey";
     public static final String MANIFEST = "manifest";
     public static final String ICON = "icon";
     public static final String README = "readme";
     public static final String LICENSE = "license";
     public static final String CHANGELOG = "changelog";
     public static final String RESOURCE = "resource";
+    public static final String VSIXMANIFEST = "vsixmanifest";
 
     // Storage types
     public static final String STORAGE_DB = "database";

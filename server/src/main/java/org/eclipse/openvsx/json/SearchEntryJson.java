@@ -9,12 +9,13 @@
  ********************************************************************************/
 package org.eclipse.openvsx.json;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
 
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
@@ -26,7 +27,7 @@ import io.swagger.v3.oas.annotations.media.Schema;;
     description = "Summary of metadata of an extension"
 )
 @JsonInclude(Include.NON_NULL)
-public class SearchEntryJson {
+public class SearchEntryJson implements Serializable {
 
     @Schema(description = "URL to get the full metadata of the extension")
     @NotNull
@@ -52,13 +53,21 @@ public class SearchEntryJson {
     @NotNull
     public String timestamp;
 
-    @Schema(description = "Essential metadata of all available versions")
-    public List<VersionReference> allVersions;
+    @Schema(description = "Essential metadata of all available versions. Deprecated: only returns the last 200 versions. Use allVersionsUrl instead.")
+    @Deprecated
+    public List<VersionReferenceJson> allVersions;
+
+    @Schema(description = "URL to get essential metadata of all available versions.")
+    public String allVersionsUrl;
 
     @Schema(description = "Average rating")
     @Min(0)
     @Max(5)
     public Double averageRating;
+
+    @Schema(description = "Number of reviews")
+    @Min(0)
+    public Long reviewCount;
 
     @Schema(description = "Number of downloads of the extension package")
     @Min(0)
@@ -68,24 +77,4 @@ public class SearchEntryJson {
     public String displayName;
 
     public String description;
-
-    @Schema(
-        name = "VersionReference",
-        description = "Essential metadata of an extension version"
-    )
-    public static class VersionReference {
-
-        @Schema(description = "URL to get the full metadata of this version")
-        public String url;
-
-        @Schema(description = "Map of file types (download, manifest, icon, readme, license, changelog) to their respective URLs")
-        public Map<String, String> files;
-
-        public String version;
-
-        @Schema(description = "Map of engine names to the respective version constraints")
-        public Map<String, String> engines;
-
-    }
-
 }

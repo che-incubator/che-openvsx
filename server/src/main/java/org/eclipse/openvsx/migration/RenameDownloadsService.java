@@ -10,37 +10,19 @@
 package org.eclipse.openvsx.migration;
 
 import org.eclipse.openvsx.entities.FileResource;
+import org.eclipse.openvsx.util.NamingUtil;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.persistence.EntityManager;
-import javax.transaction.Transactional;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
 
 @Component
 public class RenameDownloadsService {
 
     @Autowired
     EntityManager entityManager;
-
-    public String getNewBinaryName(FileResource resource) {
-        var extVersion = resource.getExtension();
-        var extension = extVersion.getExtension();
-        var namespace = extension.getNamespace();
-        var resourceName = namespace.getName() + "." + extension.getName() + "-" + extVersion.getVersion();
-        if(!TargetPlatform.isUniversal(extVersion.getTargetPlatform())) {
-            resourceName += "@" + extVersion.getTargetPlatform();
-        }
-
-        resourceName += ".vsix";
-        return resourceName;
-    }
-
-    @Transactional
-    public byte[] getContent(FileResource download) {
-        download = entityManager.merge(download);
-        return download.getStorageType().equals(FileResource.STORAGE_DB) ? download.getContent() : null;
-    }
 
     @Transactional
     public FileResource cloneResource(FileResource resource, String name) {
@@ -52,10 +34,6 @@ public class RenameDownloadsService {
         clone.setExtension(resource.getExtension());
         clone.setContent(resource.getContent());
         return clone;
-    }
-
-    public FileResource getResource(MigrationJobRequest jobRequest) {
-        return entityManager.find(FileResource.class, jobRequest.getEntityId());
     }
 
     @Transactional

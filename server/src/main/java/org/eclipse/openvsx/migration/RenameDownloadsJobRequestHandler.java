@@ -9,18 +9,21 @@
  * ****************************************************************************** */
 package org.eclipse.openvsx.migration;
 
+import org.eclipse.openvsx.util.NamingUtil;
 import org.jobrunr.jobs.lambdas.JobRequestHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.AbstractMap;
 
 @Component
+@ConditionalOnProperty(value = "ovsx.data.mirror.enabled", havingValue = "false", matchIfMissing = true)
 public class RenameDownloadsJobRequestHandler  implements JobRequestHandler<MigrationJobRequest> {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(RenameDownloadsJobRequestHandler.class);
+    protected final Logger logger = LoggerFactory.getLogger(RenameDownloadsJobRequestHandler.class);
 
     @Autowired
     MigrationService migrations;
@@ -30,22 +33,24 @@ public class RenameDownloadsJobRequestHandler  implements JobRequestHandler<Migr
 
     @Override
     public void run(MigrationJobRequest jobRequest) throws Exception {
-        var download = service.getResource(jobRequest);
-        var name = service.getNewBinaryName(download);
+        var download = migrations.getResource(jobRequest);
+        var name = NamingUtil.toFileFormat(download.getExtension(), ".vsix");
         if(download.getName().equals(name)) {
             // names are the same, nothing to do
             return;
         }
 
-        LOGGER.info("Renaming download {}", download.getName());
-        var content = service.getContent(download);
-        var extensionFile = migrations.getExtensionFile(new AbstractMap.SimpleEntry<>(download, content));
-        var newDownload = service.cloneResource(download, name);
-        migrations.uploadResource(newDownload, extensionFile);
-        migrations.deleteResource(download);
+        logger.info("Renaming download {}", download.getName());
+        var content = migrations.getContent(download);
+        try(var extensionFile = migrations.getExtensionFile(new AbstractMap.SimpleEntry<>(download, content))) {
+            var newDownload = service.cloneResource(download, name);
+            migrations.uploadFileResource(newDownload, extensionFile);
+            migrations.removeFile(download);
 
-        download.setName(name);
-        service.updateResource(download);
-        LOGGER.info("Updated download name to: {}", name);
+            download.setName(name);
+            service.updateResource(download);
+        }
+
+        logger.info("Updated download name to: {}", name);
     }
 }

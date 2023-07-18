@@ -9,19 +9,12 @@
  ********************************************************************************/
 package org.eclipse.openvsx.search;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
+import org.jobrunr.scheduling.JobRequestScheduler;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mockito;
@@ -37,9 +30,17 @@ import org.springframework.data.elasticsearch.core.query.IndexQuery;
 import org.springframework.data.util.Streamable;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
-import javax.persistence.EntityManager;
+import jakarta.persistence.EntityManager;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 
 @ExtendWith(SpringExtension.class)
+@MockBean({JobRequestScheduler.class})
 public class ElasticSearchServiceTest {
 
     @MockBean
@@ -232,21 +233,19 @@ public class ElasticSearchServiceTest {
         return index;
     }
 
-    private Extension mockExtension(String name, String namespaceName, String userName, double averageRating, int ratingCount, int downloadCount,
+    private Extension mockExtension(String name, String namespaceName, String userName, double averageRating, long ratingCount, int downloadCount,
             LocalDateTime timestamp, boolean isUnverified, boolean isUnrelated) {
         var extension = new Extension();
         extension.setName(name);
         extension.setId(name.hashCode());
         extension.setAverageRating(averageRating);
+        extension.setReviewCount(ratingCount);
         extension.setDownloadCount(downloadCount);
         Mockito.when(entityManager.merge(extension)).thenReturn(extension);
-        Mockito.when(repositories.countActiveReviews(extension))
-                .thenReturn((long) ratingCount);
+
         var namespace = new Namespace();
         namespace.setName(namespaceName);
         extension.setNamespace(namespace);
-        Mockito.when(repositories.countMemberships(namespace, NamespaceMembership.ROLE_OWNER))
-                .thenReturn(isUnverified ? 0L : 1L);
         var extVer = new ExtensionVersion();
         extVer.setTargetPlatform(TargetPlatform.NAME_UNIVERSAL);
         extVer.setTimestamp(timestamp);
@@ -258,8 +257,8 @@ public class ElasticSearchServiceTest {
         var token = new PersonalAccessToken();
         token.setUser(user);
         extVer.setPublishedWith(token);
-        Mockito.when(repositories.countMemberships(user, namespace))
-                .thenReturn(isUnrelated ? 0L : 1L);
+        Mockito.when(repositories.isVerified(namespace, user))
+                .thenReturn(!isUnverified && !isUnrelated);
         return extension;
     }
 

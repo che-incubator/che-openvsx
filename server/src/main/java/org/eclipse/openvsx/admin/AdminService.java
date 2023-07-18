@@ -7,33 +7,35 @@
  *
  * SPDX-License-Identifier: EPL-2.0
  ********************************************************************************/
-package org.eclipse.openvsx;
+package org.eclipse.openvsx.admin;
 
-import java.time.DateTimeException;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.*;
-import java.util.stream.Collectors;
-
-import javax.persistence.EntityManager;
-import javax.transaction.Transactional;
-
-import com.google.common.base.Strings;
-
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import org.apache.commons.lang3.StringUtils;
+import org.eclipse.openvsx.ExtensionService;
+import org.eclipse.openvsx.ExtensionValidator;
+import org.eclipse.openvsx.UserService;
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.eclipse.EclipseService;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.json.*;
+import org.eclipse.openvsx.migration.HandlerJobRequest;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.SearchUtilService;
 import org.eclipse.openvsx.storage.StorageUtilService;
-import org.eclipse.openvsx.util.ErrorResultException;
-import org.eclipse.openvsx.util.TimeUtil;
-import org.eclipse.openvsx.util.UrlUtil;
-import org.eclipse.openvsx.util.VersionService;
+import org.eclipse.openvsx.util.*;
+import org.jobrunr.scheduling.JobRequestScheduler;
+import org.jobrunr.scheduling.cron.Cron;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationStartedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+
+import java.nio.charset.StandardCharsets;
+import java.time.ZoneId;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.eclipse.openvsx.entities.FileResource.*;
 
@@ -70,13 +72,22 @@ public class AdminService {
     @Autowired
     CacheService cache;
 
+    @Autowired
+    JobRequestScheduler scheduler;
+
+    @EventListener
+    public void applicationStarted(ApplicationStartedEvent event) {
+        var jobRequest = new HandlerJobRequest<>(MonthlyAdminStatisticsJobRequestHandler.class);
+        scheduler.scheduleRecurrently("MonthlyAdminStatistics", Cron.monthly(1, 0, 3), ZoneId.of("UTC"), jobRequest);
+    }
+
     @Transactional(rollbackOn = ErrorResultException.class)
     public ResultJson deleteExtension(String namespaceName, String extensionName, UserData admin)
             throws ErrorResultException {
         var extension = repositories.findExtension(extensionName, namespaceName);
         if (extension == null) {
-            throw new ErrorResultException("Extension not found: " + namespaceName + "." + extensionName,
-                    HttpStatus.NOT_FOUND);
+            var extensionId = NamingUtil.toExtensionId(namespaceName, extensionName);
+            throw new ErrorResultException("Extension not found: " + extensionId, HttpStatus.NOT_FOUND);
         }
         return deleteExtension(extension, admin);
     }
@@ -86,9 +97,7 @@ public class AdminService {
             throws ErrorResultException {
         var extVersion = repositories.findVersion(version, targetPlatform, extensionName, namespaceName);
         if (extVersion == null) {
-            var message = "Extension not found: " + namespaceName + "." + extensionName +
-                    " " + version +
-                    (Strings.isNullOrEmpty(targetPlatform) ? "" : " (" + targetPlatform + ")");
+            var message = "Extension not found: " + NamingUtil.toLogFormat(namespaceName, extensionName, targetPlatform, version);
 
             throw new ErrorResultException(message, HttpStatus.NOT_FOUND);
         }
@@ -100,18 +109,17 @@ public class AdminService {
         var namespace = extension.getNamespace();
         var bundledRefs = repositories.findBundledExtensionsReference(extension);
         if (!bundledRefs.isEmpty()) {
-            throw new ErrorResultException("Extension " + namespace.getName() + "." + extension.getName()
+            throw new ErrorResultException("Extension " + NamingUtil.toExtensionId(extension)
                     + " is bundled by the following extension packs: "
                     + bundledRefs.stream()
-                        .map(ev -> ev.getExtension().getNamespace().getName() + "." + ev.getExtension().getName() + "@" + ev.getVersion())
+                        .map(NamingUtil::toFileFormat)
                         .collect(Collectors.joining(", ")));
         }
         var dependRefs = repositories.findDependenciesReference(extension);
         if (!dependRefs.isEmpty()) {
-            throw new ErrorResultException("The following extensions have a dependency on " + namespace.getName() + "."
-                    + extension.getName() + ": "
+            throw new ErrorResultException("The following extensions have a dependency on " + NamingUtil.toExtensionId(extension) + ": "
                     + dependRefs.stream()
-                        .map(ev -> ev.getExtension().getNamespace().getName() + "." + ev.getExtension().getName() + "@" + ev.getVersion())
+                        .map(NamingUtil::toFileFormat)
                         .collect(Collectors.joining(", ")));
         }
 
@@ -126,7 +134,7 @@ public class AdminService {
         entityManager.remove(extension);
         search.removeSearchEntry(extension);
 
-        var result = ResultJson.success("Deleted " + namespace.getName() + "." + extension.getName());
+        var result = ResultJson.success("Deleted " + NamingUtil.toExtensionId(extension));
         logAdminAction(admin, result);
         return result;
     }
@@ -137,23 +145,27 @@ public class AdminService {
             return deleteExtension(extension, admin);
         }
 
-        cache.evictExtensionJsons(extension);
         removeExtensionVersion(extVersion);
         extension.getVersions().remove(extVersion);
         extensions.updateExtension(extension);
 
-        var result = ResultJson.success("Deleted " + extension.getNamespace().getName() + "." + extension.getName()
-                + " " + extVersion.getVersion());
+        var result = ResultJson.success("Deleted " + NamingUtil.toLogFormat(extVersion));
         logAdminAction(admin, result);
         return result;
     }
 
     private void removeExtensionVersion(ExtensionVersion extVersion) {
         repositories.findFiles(extVersion).forEach(file -> {
-            storageUtil.removeFile(file);
+            enqueueRemoveFileJob(file);
             entityManager.remove(file);
         });
         entityManager.remove(extVersion);
+    }
+
+    private void enqueueRemoveFileJob(FileResource resource) {
+        if(!resource.getStorageType().equals(STORAGE_DB)) {
+            scheduler.enqueue(new RemoveFileJobRequest(resource));
+        }
     }
 
     @Transactional(rollbackOn = ErrorResultException.class)
@@ -187,6 +199,7 @@ public class AdminService {
         if (namespaceIssue.isPresent()) {
             throw new ErrorResultException(namespaceIssue.get().toString());
         }
+
         var namespace = repositories.findNamespace(json.name);
         if (namespace != null) {
             throw new ErrorResultException("Namespace already exists: " + namespace.getName());
@@ -197,6 +210,52 @@ public class AdminService {
         return ResultJson.success("Created namespace " + namespace.getName());
     }
 
+    public void changeNamespace(ChangeNamespaceJson json) {
+        if (StringUtils.isEmpty(json.oldNamespace)) {
+            throw new ErrorResultException("Old namespace must have a value");
+        }
+        if (StringUtils.isEmpty(json.newNamespace)) {
+            throw new ErrorResultException("New namespace must have a value");
+        }
+
+        var oldNamespace = repositories.findNamespace(json.oldNamespace);
+        if (oldNamespace == null) {
+            throw new ErrorResultException("Old namespace doesn't exists: " + json.oldNamespace);
+        }
+
+        var newNamespace = repositories.findNamespace(json.newNamespace);
+        if (newNamespace != null && !json.mergeIfNewNamespaceAlreadyExists) {
+            throw new ErrorResultException("New namespace already exists: " + json.newNamespace);
+        }
+        if (newNamespace != null) {
+            var newExtensions = repositories.findExtensions(newNamespace).stream()
+                    .collect(Collectors.toMap(Extension::getName, e -> e));
+            var oldExtensions = repositories.findExtensions(oldNamespace).stream()
+                    .collect(Collectors.toMap(Extension::getName, e -> e));
+
+            var duplicateExtensions = oldExtensions.keySet().stream()
+                    .filter(newExtensions::containsKey)
+                    .collect(Collectors.joining("','"));
+            if(!duplicateExtensions.isEmpty()) {
+                var message = "Can't merge namespaces, because new namespace '" +
+                        json.newNamespace +
+                        "' and old namespace '" +
+                        json.oldNamespace +
+                        "' have " +
+                        (duplicateExtensions.indexOf(',') == -1 ? "a " : "") +
+                        "duplicate extension" +
+                        (duplicateExtensions.indexOf(',') == -1 ? "" : "s") +
+                        ": '" +
+                        duplicateExtensions +
+                        "'.";
+
+                throw new ErrorResultException(message);
+            }
+        }
+
+        scheduler.enqueue(new ChangeNamespaceJobRequest(json));
+    }
+    
     public UserPublishInfoJson getUserPublishInfo(String provider, String loginName) {
         var user = repositories.findUserByLoginName(provider, loginName);
         if (user == null) {
@@ -214,7 +273,7 @@ public class AdminService {
                     json.preview = latest.isPreview();
                     json.active = latest.getExtension().isActive();
                     json.files = storageUtil.getFileUrls(latest, UrlUtil.getBaseUrl(),
-                            DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG);
+                            DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG, VSIXMANIFEST);
 
                     return json;
                 })
@@ -292,8 +351,17 @@ public class AdminService {
         }
     }
 
-    @Transactional
     public AdminStatistics getAdminStatistics(int year, int month) throws ErrorResultException {
+        validateYearAndMonth(year, month);
+        var statistics = repositories.findAdminStatisticsByYearAndMonth(year, month);
+        if(statistics == null) {
+            throw new NotFoundException();
+        }
+
+        return statistics;
+    }
+
+    private void validateYearAndMonth(int year, int month) {
         if(year < 0) {
             throw new ErrorResultException("Year can't be negative", HttpStatus.BAD_REQUEST);
         }
@@ -301,62 +369,9 @@ public class AdminService {
             throw new ErrorResultException("Month must be a value between 1 and 12", HttpStatus.BAD_REQUEST);
         }
 
-        var now = LocalDateTime.now();
-        if(year > now.getYear() || (year == now.getYear() && month > now.getMonthValue())) {
+        var now = TimeUtil.getCurrentUTC();
+        if(year > now.getYear() || (year == now.getYear() && month >= now.getMonthValue())) {
             throw new ErrorResultException("Combination of year and month lies in the future", HttpStatus.BAD_REQUEST);
         }
-
-        var statistics = repositories.findAdminStatisticsByYearAndMonth(year, month);
-        if(statistics == null) {
-            LocalDateTime startInclusive;
-            try {
-                startInclusive = LocalDateTime.of(year, month, 1, 0, 0);
-            } catch(DateTimeException e) {
-                throw new ErrorResultException("Invalid month or year", HttpStatus.BAD_REQUEST);
-            }
-
-            var currentYearAndMonth = now.getYear() == year && now.getMonthValue() == month;
-            var endExclusive = currentYearAndMonth
-                    ? now.truncatedTo(ChronoUnit.MINUTES)
-                    : startInclusive.plusMonths(1);
-
-            var extensions = repositories.countActiveExtensions(endExclusive);
-            var downloads = repositories.downloadsBetween(startInclusive, endExclusive);
-            var downloadsTotal = repositories.downloadsUntil(endExclusive);
-            var publishers = repositories.countActiveExtensionPublishers(endExclusive);
-            var averageReviewsPerExtension = repositories.averageNumberOfActiveReviewsPerActiveExtension(endExclusive);
-            var namespaceOwners = repositories.countPublishersThatClaimedNamespaceOwnership(endExclusive);
-            var extensionsByRating = repositories.countActiveExtensionsGroupedByExtensionReviewRating(endExclusive);
-            var publishersByExtensionsPublished = repositories.countActiveExtensionPublishersGroupedByExtensionsPublished(endExclusive);
-
-            var limit = 10;
-            var topMostActivePublishingUsers = repositories.topMostActivePublishingUsers(endExclusive, limit);
-            var topNamespaceExtensions = repositories.topNamespaceExtensions(endExclusive, limit);
-            var topNamespaceExtensionVersions = repositories.topNamespaceExtensionVersions(endExclusive, limit);
-            var topMostDownloadedExtensions = repositories.topMostDownloadedExtensions(endExclusive, limit);
-
-            statistics = new AdminStatistics();
-            statistics.setYear(year);
-            statistics.setMonth(month);
-            statistics.setExtensions(extensions);
-            statistics.setDownloads(downloads);
-            statistics.setDownloadsTotal(downloadsTotal);
-            statistics.setPublishers(publishers);
-            statistics.setAverageReviewsPerExtension(averageReviewsPerExtension);
-            statistics.setNamespaceOwners(namespaceOwners);
-            statistics.setExtensionsByRating(extensionsByRating);
-            statistics.setPublishersByExtensionsPublished(publishersByExtensionsPublished);
-            statistics.setTopMostActivePublishingUsers(topMostActivePublishingUsers);
-            statistics.setTopNamespaceExtensions(topNamespaceExtensions);
-            statistics.setTopNamespaceExtensionVersions(topNamespaceExtensionVersions);
-            statistics.setTopMostDownloadedExtensions(topMostDownloadedExtensions);
-
-            if(!currentYearAndMonth) {
-                // archive statistics for quicker lookup next time
-                entityManager.persist(statistics);
-            }
-        }
-
-        return statistics;
     }
 }

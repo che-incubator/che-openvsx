@@ -18,7 +18,8 @@ import com.azure.storage.blob.models.BlobListDetails;
 import com.azure.storage.blob.models.ListBlobsOptions;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Strings;
+import org.apache.commons.lang3.StringUtils;
+import org.eclipse.openvsx.util.TempFile;
 import org.jobrunr.jobs.annotations.Job;
 import org.jobrunr.spring.annotations.Recurring;
 import org.slf4j.Logger;
@@ -33,11 +34,13 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -76,8 +79,8 @@ public class AzureDownloadCountService {
      * Indicates whether the download service is enabled by application config.
      */
     public boolean isEnabled() {
-        var logsEnabled = !Strings.isNullOrEmpty(logsServiceEndpoint);
-        var storageEnabled = !Strings.isNullOrEmpty(storageServiceEndpoint);
+        var logsEnabled = !StringUtils.isEmpty(logsServiceEndpoint);
+        var storageEnabled = !StringUtils.isEmpty(storageServiceEndpoint);
         if(logsEnabled && !storageEnabled) {
             logger.warn("The ovsx.storage.azure.service-endpoint value must be set to enable AzureDownloadCountService");
         }
@@ -124,7 +127,7 @@ public class AzureDownloadCountService {
                         if(!files.isEmpty()) {
                             var extensionDownloads = processor.processDownloadCounts(files);
                             var updatedExtensions = processor.increaseDownloadCounts(extensionDownloads);
-                            processor.evictExtensionJsons(updatedExtensions);
+                            processor.evictCaches(updatedExtensions);
                             processor.updateSearchEntries(updatedExtensions);
                         }
 
@@ -140,22 +143,17 @@ public class AzureDownloadCountService {
             }
 
             var continuationToken = response != null ? response.getContinuationToken() : "";
-            iterableByPage = !Strings.isNullOrEmpty(continuationToken) ? blobs.iterableByPage(continuationToken) : null;
+            iterableByPage = !StringUtils.isEmpty(continuationToken) ? blobs.iterableByPage(continuationToken) : null;
         }
 
         logger.info("<< updateDownloadCounts");
     }
 
     private Map<String, List<LocalDateTime>> processBlobItem(String blobName) {
-        Path downloadsTempFile;
-        try {
-            downloadsTempFile = Files.createTempFile("azure-downloads-", ".json");
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        getContainerClient().getBlobClient(blobName).downloadToFile(downloadsTempFile.toAbsolutePath().toString(), true);
-        try (var reader = Files.newBufferedReader(downloadsTempFile)) {
+        try (
+                var downloadsTempFile = downloadBlobItem(blobName);
+                var reader = Files.newBufferedReader(downloadsTempFile.getPath())
+        ) {
             return reader.lines()
                     .map(line -> {
                         try {
@@ -185,6 +183,12 @@ public class AzureDownloadCountService {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private TempFile downloadBlobItem(String blobName) throws IOException {
+        var downloadsTempFile = new TempFile("azure-downloads-", ".json");
+        getContainerClient().getBlobClient(blobName).downloadToFile(downloadsTempFile.getPath().toAbsolutePath().toString(), true);
+        return downloadsTempFile;
     }
 
     private List<String> getBlobNames(List<BlobItem> items) {

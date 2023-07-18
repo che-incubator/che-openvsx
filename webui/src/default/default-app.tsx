@@ -40,15 +40,14 @@ const App = () => {
     );
 
     const pageSettings = createPageSettings(theme, prefersDarkMode, service.serverUrl);
-
-    return (
+    return (<>
         <ThemeProvider theme={theme}>
             <Main
                 service={service}
                 pageSettings={pageSettings}
             />
         </ThemeProvider>
-    );
+    </>);
 };
 
 const node = document.getElementById('main');

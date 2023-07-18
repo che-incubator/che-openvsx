@@ -10,26 +10,27 @@
 
 package org.eclipse.openvsx.search;
 
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import javax.annotation.PostConstruct;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
-import org.eclipse.openvsx.ExtensionService;
 import org.eclipse.openvsx.entities.Extension;
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.NamespaceMembership;
 import org.eclipse.openvsx.repositories.RepositoryService;
+import org.eclipse.openvsx.util.NamingUtil;
 import org.eclipse.openvsx.util.TimeUtil;
 import org.eclipse.openvsx.util.VersionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.Optional;
 
 /**
  * Provides relevance for a given extension
@@ -58,6 +59,9 @@ public class RelevanceService {
     double deprecatedElasticSearchUnverifiedRelevance;
 
     @Autowired
+    EntityManager entityManager;
+
+    @Autowired
     RepositoryService repositories;
 
     @Autowired
@@ -83,39 +87,61 @@ public class RelevanceService {
         }
     }
 
-    protected ExtensionSearch toSearchEntry(Extension extension, SearchStats stats) {
+    @Transactional
+    public ExtensionSearch toSearchEntryTrxn(Extension extension, SearchStats stats) {
+        extension = entityManager.merge(extension);
+        return toSearchEntry(extension, stats);
+    }
+
+    public ExtensionSearch toSearchEntry(Extension extension, SearchStats stats) {
         var latest = versions.getLatest(extension, null, false, true);
         var entry = extension.toSearch(latest);
+        entry.rating = calculateRating(extension, stats);
+        entry.relevance = calculateRelevance(extension, latest, stats, entry);
 
+        return entry;
+    }
+
+    private double calculateRating(Extension extension, SearchStats stats) {
+        // IMDB rating formula, source: https://stackoverflow.com/a/1411268
+        var padding = 100;
+        var reviews = Optional.ofNullable(extension.getReviewCount()).orElse(0L);
+        var averageRating = Optional.ofNullable(extension.getAverageRating()).orElse(0.0);
+        // The amount of "smoothing" applied to the rating is based on reviews in relation to padding.
+        return (averageRating * reviews + stats.averageReviewRating * padding) / (reviews + padding);
+    }
+
+    private double calculateRelevance(Extension extension, ExtensionVersion latest, SearchStats stats, ExtensionSearch entry) {
         var ratingValue = 0.0;
-        if (entry.averageRating != null) {
-            var reviewCount = repositories.countActiveReviews(extension);
+        if (extension.getAverageRating() != null) {
+            var reviewCount = extension.getReviewCount();
             // Reduce the rating relevance if there are only few reviews
             var countRelevance = saturate(reviewCount, 0.25);
-            ratingValue = (entry.averageRating / 5.0) * countRelevance;
+            ratingValue = (extension.getAverageRating() / 5.0) * countRelevance;
         }
         var downloadsValue = entry.downloadCount / stats.downloadRef;
         var timestamp = latest.getTimestamp();
         var timestampValue = Duration.between(stats.oldest, timestamp).toSeconds() / stats.timestampRef;
-        entry.relevance = ratingRelevance * limit(ratingValue) + downloadsRelevance * limit(downloadsValue)
+        var relevance = ratingRelevance * limit(ratingValue) + downloadsRelevance * limit(downloadsValue)
                 + timestampRelevance * limit(timestampValue);
 
         // Reduce the relevance value of unverified extensions
         if (!isVerified(latest)) {
-            entry.relevance *= unverifiedRelevance;
+            relevance *= unverifiedRelevance;
         }
 
         if (Double.isNaN(entry.relevance) || Double.isInfinite(entry.relevance)) {
-            var message = "Invalid relevance for entry " + entry.namespace + "." + entry.name;
+            var message = "Invalid relevance for entry " + NamingUtil.toExtensionId(entry);
             try {
                 message += " " + new ObjectMapper().writeValueAsString(stats);
             } catch (JsonProcessingException exc) {
                 // Ignore exception
             }
             logger.error(message);
-            entry.relevance = 0.0;
+            relevance = 0.0;
         }
-        return entry;
+
+        return relevance;
     }
 
     private double limit(double value) {
@@ -136,14 +162,14 @@ public class RelevanceService {
             return false;
         var user = extVersion.getPublishedWith().getUser();
         var namespace = extVersion.getExtension().getNamespace();
-        return repositories.countMemberships(namespace, NamespaceMembership.ROLE_OWNER) > 0
-                && repositories.countMemberships(user, namespace) > 0;
+        return repositories.isVerified(namespace, user);
     }
 
     public static class SearchStats {
         protected final double downloadRef;
         protected final double timestampRef;
         protected final LocalDateTime oldest;
+        protected final double averageReviewRating;
 
         public SearchStats(RepositoryService repositories) {
             var now = TimeUtil.getCurrentUTC();
@@ -152,6 +178,7 @@ public class RelevanceService {
             this.downloadRef = maxDownloads * 1.5 + 100;
             this.oldest = oldestTimestamp == null ? now : oldestTimestamp;
             this.timestampRef = Duration.between(this.oldest, now).toSeconds() + 60;
+            this.averageReviewRating = repositories.getAverageReviewRating();
         }
     }
 }

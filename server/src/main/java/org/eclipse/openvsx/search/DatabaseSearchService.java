@@ -12,12 +12,14 @@ package org.eclipse.openvsx.search;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.elasticsearch.core.*;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.eclipse.openvsx.entities.Extension;
 import org.eclipse.openvsx.repositories.RepositoryService;
@@ -25,8 +27,9 @@ import org.eclipse.openvsx.search.RelevanceService.SearchStats;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 
-import javax.transaction.Transactional;
+import jakarta.transaction.Transactional;
 
+import static org.eclipse.openvsx.cache.CacheService.CACHE_AVERAGE_REVIEW_RATING;
 import static org.eclipse.openvsx.cache.CacheService.CACHE_DATABASE_SEARCH;
 
 /**
@@ -51,15 +54,16 @@ public class DatabaseSearchService implements ISearchService {
     @Autowired
     VersionService versions;
 
-    @Cacheable(CACHE_DATABASE_SEARCH)
     @Transactional
+    @Cacheable(CACHE_DATABASE_SEARCH)
+    @CacheEvict(value = CACHE_AVERAGE_REVIEW_RATING, allEntries = true)
     public SearchHits<ExtensionSearch> search(ISearchService.Options options) {
         // grab all extensions
         var matchingExtensions = repositories.findAllActiveExtensions();
 
         // no extensions in the database
         if (matchingExtensions.isEmpty()) {
-            return new SearchHitsImpl<>(0,TotalHitsRelation.OFF, 0f, "", Collections.emptyList(), null, null);
+            return new SearchHitsImpl<>(0,TotalHitsRelation.OFF, 0f, null, null, Collections.emptyList(), null, null);
         }
 
         // exlude namespaces
@@ -95,36 +99,33 @@ public class DatabaseSearchService implements ISearchService {
             });
         }
 
-        List<ExtensionSearch> sortedExtensions;
-
         // need to perform the sortBy ()
-        // 'relevance' | 'timestamp' | 'averageRating' | 'downloadCount';
+        // 'relevance' | 'timestamp' | 'rating' | 'downloadCount';
 
-        if ("relevance".equals(options.sortBy)) {
-            // for relevance we're using relevance service to get the relevance item
+        Stream<ExtensionSearch> searchEntries;
+        if("relevance".equals(options.sortBy) || "rating".equals(options.sortBy)) {
             var searchStats = new SearchStats(repositories);
-
-            // needs to add relevance on extensions
-            sortedExtensions = matchingExtensions
-                    .map(extension -> relevanceService.toSearchEntry(extension, searchStats))
-                    .stream()
-                    .sorted(new RelevanceComparator())
-                    .collect(Collectors.toList());
+            searchEntries = matchingExtensions.stream().map(extension -> relevanceService.toSearchEntry(extension, searchStats));
         } else {
-            sortedExtensions = matchingExtensions.stream()
-                    .map(extension -> {
-                        var latest = versions.getLatest(extension, null, false, true);
-                        return extension.toSearch(latest);
-                    })
-                    .collect(Collectors.toList());
-            if ("downloadCount".equals(options.sortBy)) {
-                sortedExtensions.sort(new DownloadedCountComparator());
-            } else if ("averageRating".equals(options.sortBy)) {
-                sortedExtensions.sort(new AverageRatingComparator());
-            } else if ("timestamp".equals(options.sortBy)) {
-                sortedExtensions.sort(new TimestampComparator());
-            }
+            searchEntries = matchingExtensions.stream().map(extension -> {
+                var latest = versions.getLatest(extension, null, false, true);
+                return extension.toSearch(latest);
+            });
         }
+
+        var comparators = new HashMap<>(Map.of(
+                "relevance", new RelevanceComparator(),
+                "timestamp", new TimestampComparator(),
+                "rating", new RatingComparator(),
+                "downloadCount", new DownloadedCountComparator()
+        ));
+
+        var comparator = comparators.get(options.sortBy);
+        if(comparator != null) {
+            searchEntries = searchEntries.sorted(comparator);
+        }
+
+        var sortedExtensions = searchEntries.collect(Collectors.toList());
 
         // need to do sortOrder
         // 'asc' | 'desc';
@@ -147,7 +148,7 @@ public class DatabaseSearchService implements ISearchService {
             searchHits = sortedExtensions.stream().map(extensionSearch -> new SearchHit<>(null, null, null, 0.0f, null, null, null, null, null, null, extensionSearch)).collect(Collectors.toList());
         }
 
-        return new SearchHitsImpl<>(totalHits, TotalHitsRelation.OFF, 0f, "", searchHits, null, null);
+        return new SearchHitsImpl<>(totalHits, TotalHitsRelation.OFF, 0f, null, null, searchHits, null, null);
     }
 
     /**
@@ -161,6 +162,13 @@ public class DatabaseSearchService implements ISearchService {
     }
 
     @Override
+    @Async
+    @CacheEvict(value = CACHE_DATABASE_SEARCH, allEntries = true)
+    public void updateSearchEntriesAsync(List<Extension> extensions) {
+
+    }
+
+    @Override
     @CacheEvict(value = CACHE_DATABASE_SEARCH, allEntries = true)
     public void updateSearchEntries(List<Extension> extensions) {
 
@@ -169,6 +177,12 @@ public class DatabaseSearchService implements ISearchService {
     @Override
     @CacheEvict(value = CACHE_DATABASE_SEARCH, allEntries = true)
     public void updateSearchEntry(Extension extension) {
+
+    }
+
+    @Override
+    @CacheEvict(value = CACHE_DATABASE_SEARCH, allEntries = true)
+    public void removeSearchEntries(Collection<Long> ids) {
 
     }
 
@@ -193,17 +207,17 @@ public class DatabaseSearchService implements ISearchService {
     /**
      * Sort by averageRating
      */
-    class AverageRatingComparator implements Comparator<ExtensionSearch> {
+    class RatingComparator implements Comparator<ExtensionSearch> {
 
         @Override
         public int compare(ExtensionSearch ext1, ExtensionSearch ext2) {
-            if (ext1.averageRating == null) {
+            if (ext1.rating == null) {
                 return -1;
-            } else if (ext2.averageRating == null) {
+            } else if (ext2.rating == null) {
                 return 1;
             }
-            // averageRating
-            return Double.compare(ext1.averageRating, ext2.averageRating);
+            // rating
+            return Double.compare(ext1.rating, ext2.rating);
         }
     }
 

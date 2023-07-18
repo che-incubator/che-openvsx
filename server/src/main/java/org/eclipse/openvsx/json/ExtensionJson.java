@@ -14,9 +14,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
@@ -86,8 +86,12 @@ public class ExtensionJson extends ResultJson implements Serializable {
     @Deprecated
     public String namespaceAccess;
 
-    @Schema(description = "Map of available versions to their metadata URLs")
+    @Schema(description = "Map of available versions to their metadata URLs. Deprecated: only returns the last 200 versions. Use allVersionsUrl instead.")
+    @Deprecated
     public Map<String, String> allVersions;
+
+    @Schema(description = "URL to get a map of available versions to their metadata URLs.")
+    public String allVersionsUrl;
 
     @Schema(description = "Average rating")
     @Min(0)
@@ -115,6 +119,9 @@ public class ExtensionJson extends ResultJson implements Serializable {
     @Schema(description = "Name to be displayed in user interfaces")
     public String displayName;
 
+    @Schema(description = "Namespace name to be displayed in user interfaces")
+    public String namespaceDisplayName;
+
     public String description;
 
     @Schema(description = "Map of engine names to the respective version constraints")
@@ -135,6 +142,9 @@ public class ExtensionJson extends ResultJson implements Serializable {
 
     @Schema(description = "URL of the extension's source repository")
     public String repository;
+
+    @Schema(description = "URL to sponsor the extension")
+    public String sponsorLink;
 
     @Schema(description = "URL of the extension's bug tracker")
     public String bugs;
@@ -191,6 +201,7 @@ public class ExtensionJson extends ResultJson implements Serializable {
                 && Objects.equals(unrelatedPublisher, that.unrelatedPublisher)
                 && Objects.equals(namespaceAccess, that.namespaceAccess)
                 && Objects.equals(allVersions, that.allVersions)
+                && Objects.equals(allVersionsUrl, that.allVersionsUrl)
                 && Objects.equals(averageRating, that.averageRating)
                 && Objects.equals(downloadCount, that.downloadCount)
                 && Objects.equals(reviewCount, that.reviewCount)
@@ -223,10 +234,10 @@ public class ExtensionJson extends ResultJson implements Serializable {
     public int hashCode() {
         return Objects.hash(
                 namespaceUrl, reviewsUrl, files, name, namespace, targetPlatform, version, preRelease, publishedBy,
-                active, verified, unrelatedPublisher, namespaceAccess, allVersions, averageRating, downloadCount,
-                reviewCount, versionAlias, timestamp, preview, displayName, description, engines, categories, extensionKind,
-                tags, license, homepage, repository, bugs, markdown, galleryColor, galleryTheme, qna, badges, dependencies,
-                bundledExtensions, downloads, allTargetPlatformVersions, url
+                active, verified, unrelatedPublisher, namespaceAccess, allVersions, allVersionsUrl, averageRating,
+                downloadCount, reviewCount, versionAlias, timestamp, preview, displayName, description, engines, categories,
+                extensionKind, tags, license, homepage, repository, bugs, markdown, galleryColor, galleryTheme, qna, badges,
+                dependencies, bundledExtensions, downloads, allTargetPlatformVersions, url
         );
     }
 }

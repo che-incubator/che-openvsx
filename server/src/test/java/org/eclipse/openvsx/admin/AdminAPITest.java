@@ -7,38 +7,24 @@
  *
  * SPDX-License-Identifier: EPL-2.0
  ********************************************************************************/
-package org.eclipse.openvsx;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
-import java.time.LocalDateTime;
-import java.util.*;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
-
-import javax.persistence.EntityManager;
+package org.eclipse.openvsx.admin;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.eclipse.openvsx.*;
 import org.eclipse.openvsx.adapter.VSCodeIdService;
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
 import org.eclipse.openvsx.eclipse.EclipseService;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.json.*;
+import org.eclipse.openvsx.publish.ExtensionVersionIntegrityService;
 import org.eclipse.openvsx.publish.PublishExtensionVersionHandler;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.SearchUtilService;
 import org.eclipse.openvsx.security.OAuth2UserServices;
+import org.eclipse.openvsx.security.SecurityConfig;
 import org.eclipse.openvsx.security.TokenService;
 import org.eclipse.openvsx.storage.AzureBlobStorageService;
 import org.eclipse.openvsx.storage.AzureDownloadCountService;
@@ -46,6 +32,7 @@ import org.eclipse.openvsx.storage.GoogleCloudStorageService;
 import org.eclipse.openvsx.storage.StorageUtilService;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
+import org.jobrunr.scheduling.JobRequestScheduler;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +42,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.util.Streamable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -63,12 +51,28 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import jakarta.persistence.EntityManager;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
 @WebMvcTest(AdminAPI.class)
 @AutoConfigureWebClient
 @MockBean({
     ClientRegistrationRepository.class, UpstreamRegistryService.class, GoogleCloudStorageService.class,
     AzureBlobStorageService.class, VSCodeIdService.class, AzureDownloadCountService.class,
-    CacheService.class, PublishExtensionVersionHandler.class
+    CacheService.class, PublishExtensionVersionHandler.class, SearchUtilService.class,
+    EclipseService.class, SimpleMeterRegistry.class
 })
 public class AdminAPITest {
     
@@ -76,16 +80,16 @@ public class AdminAPITest {
     UserService users;
 
     @MockBean
-    RepositoryService repositories;
+    JobRequestScheduler scheduler;
 
     @MockBean
-    SearchUtilService search;
+    RepositoryService repositories;
 
     @MockBean
     EntityManager entityManager;
 
     @MockBean
-    EclipseService eclipse;
+    ExtensionVersionIntegrityService integrityService;
 
     @Autowired
     MockMvc mockMvc;
@@ -119,7 +123,7 @@ public class AdminAPITest {
                 .andExpect(content().json(extensionJson(e -> {
                     e.namespace = "foobar";
                     e.name = "baz";
-                    e.version = "2";
+                    e.version = "2.0.0";
                     e.active = true;
                 })));
     }
@@ -139,7 +143,7 @@ public class AdminAPITest {
                 .andExpect(content().json(extensionJson(e -> {
                     e.namespace = "foobar";
                     e.name = "baz";
-                    e.version = "2";
+                    e.version = "2.0.0";
                     e.active = false;
                 })));
     }
@@ -278,12 +282,12 @@ public class AdminAPITest {
         mockAdminUser();
         mockExtension(2, 0, 0);
         mockMvc.perform(post("/admin/extension/{namespace}/{extension}/delete", "foobar", "baz")
-                .content("[{\"targetPlatform\":\"universal\",\"version\":\"2\"}]")
+                .content("[{\"targetPlatform\":\"universal\",\"version\":\"2.0.0\"}]")
                 .contentType(MediaType.APPLICATION_JSON)
                 .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
                 .with(csrf().asHeader()))
                 .andExpect(status().isOk())
-                .andExpect(content().json(successJson("Deleted foobar.baz 2")));
+                .andExpect(content().json(successJson("Deleted foobar.baz 2.0.0")));
     }
 
     @Test
@@ -291,7 +295,7 @@ public class AdminAPITest {
         mockAdminUser();
         mockExtension(1, 0, 0);
         mockMvc.perform(post("/admin/extension/{namespace}/{extension}/delete", "foobar", "baz")
-                .content("[{\"targetPlatform\":\"universal\",\"version\":\"1\"}]")
+                .content("[{\"targetPlatform\":\"universal\",\"version\":\"1.0.0\"}]")
                 .contentType(MediaType.APPLICATION_JSON)
                 .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
                 .with(csrf().asHeader()))
@@ -307,7 +311,7 @@ public class AdminAPITest {
                 .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
                 .with(csrf().asHeader()))
                 .andExpect(status().isBadRequest())
-                .andExpect(content().json(errorJson("Extension foobar.baz is bundled by the following extension packs: foobar.bundle@1")));
+                .andExpect(content().json(errorJson("Extension foobar.baz is bundled by the following extension packs: foobar.bundle-1.0.0")));
     }
 
     @Test
@@ -318,7 +322,7 @@ public class AdminAPITest {
                 .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
                 .with(csrf().asHeader()))
                 .andExpect(status().isBadRequest())
-                .andExpect(content().json(errorJson("The following extensions have a dependency on foobar.baz: foobar.dependant@1")));
+                .andExpect(content().json(errorJson("The following extensions have a dependency on foobar.baz: foobar.dependant-1.0.0")));
     }
 
     @Test
@@ -493,7 +497,7 @@ public class AdminAPITest {
                     var ext1 = new ExtensionJson();
                     ext1.namespace = "foobar";
                     ext1.name = "baz";
-                    ext1.version = "1";
+                    ext1.version = "1.0.0";
                     upi.extensions = Arrays.asList(ext1);
                 })));
     }
@@ -834,197 +838,185 @@ public class AdminAPITest {
     }
 
     @Test
-    public void testAdminOnTheFlyReportCsv() throws Exception {
+    public void testCurrentMonthAdminReportCsv() throws Exception {
         var token = mockAdminToken();
-        var year = 2021;
-        var month = 7;
-        var extensions = 9123L;
-        var downloads = 2145L;
-        var downloadsTotal = 57199L;
-        var publishers = 846L;
-        var averageReviewsPerExtension = 8.75;
-        var namespaceOwners = 623L;
-        var extensionsByRating = Map.of(3, 8000, 5, 1123);
-        var publishersByExtensionsPublished = Map.of(1, 6590, 3, 815);
-        var topMostActivePublishingUsers = Map.of("u_foo", 93, "u_bar", 543, "u_baz", 82);
-        var topNamespaceExtensions = Map.of("n_foo", 9, "n_bar", 48, "n_baz", 1239);
-        var topNamespaceExtensionVersions = Map.of("nv_foo", 234, "nv_bar", 67, "nv_baz", 932);
-        var topMostDownloadedExtensions = Map.of("foo.bar", 3847L, "bar.foo", 1237L, "foo.baz", 4378L);
-
-        var stats = new AdminStatistics();
-        stats.setYear(year);
-        stats.setMonth(month);
-        stats.setExtensions(extensions);
-        stats.setDownloads(downloads);
-        stats.setDownloadsTotal(downloadsTotal);
-        stats.setPublishers(publishers);
-        stats.setAverageReviewsPerExtension(averageReviewsPerExtension);
-        stats.setNamespaceOwners(namespaceOwners);
-        stats.setExtensionsByRating(extensionsByRating);
-        stats.setPublishersByExtensionsPublished(publishersByExtensionsPublished);
-        stats.setTopMostActivePublishingUsers(topMostActivePublishingUsers);
-        stats.setTopNamespaceExtensions(topNamespaceExtensions);
-        stats.setTopNamespaceExtensionVersions(topNamespaceExtensionVersions);
-        stats.setTopMostDownloadedExtensions(topMostDownloadedExtensions);
-
-        Mockito.when(repositories.findAdminStatisticsByYearAndMonth(year, month)).thenReturn(null);
-
-        var startInclusive = LocalDateTime.of(year, month, 1, 0, 0);
-        var endExclusive = startInclusive.plusMonths(1);
-        Mockito.when(repositories.countActiveExtensions(endExclusive)).thenReturn(extensions);
-        Mockito.when(repositories.downloadsBetween(startInclusive, endExclusive)).thenReturn(downloads);
-        Mockito.when(repositories.downloadsUntil(endExclusive)).thenReturn(downloadsTotal);
-        Mockito.when(repositories.countActiveExtensionPublishers(endExclusive)).thenReturn(publishers);
-        Mockito.when(repositories.averageNumberOfActiveReviewsPerActiveExtension(endExclusive)).thenReturn(averageReviewsPerExtension);
-        Mockito.when(repositories.countPublishersThatClaimedNamespaceOwnership(endExclusive)).thenReturn(namespaceOwners);
-        Mockito.when(repositories.countActiveExtensionsGroupedByExtensionReviewRating(endExclusive)).thenReturn(extensionsByRating);
-        Mockito.when(repositories.countActiveExtensionPublishersGroupedByExtensionsPublished(endExclusive)).thenReturn(publishersByExtensionsPublished);
-        Mockito.when(repositories.topMostActivePublishingUsers(endExclusive, 10)).thenReturn(topMostActivePublishingUsers);
-        Mockito.when(repositories.topNamespaceExtensions(endExclusive, 10)).thenReturn(topNamespaceExtensions);
-        Mockito.when(repositories.topNamespaceExtensionVersions(endExclusive, 10)).thenReturn(topNamespaceExtensionVersions);
-        Mockito.when(repositories.topMostDownloadedExtensions(endExclusive, 10)).thenReturn(topMostDownloadedExtensions);
-
-        var values = List.<Object>of(year, month, extensions, downloads, downloadsTotal, publishers,
-                averageReviewsPerExtension, namespaceOwners, 0, 0, 8000, 0, 1123, 6590, 815, 543, 93, 82,
-                1239, 48, 9, 932, 234, 67, 4378, 3847, 1237);
-        mockMvc.perform(get("/admin/report?token={token}&year={year}&month={month}", token.getValue(), year, month)
+        var now = LocalDateTime.now();
+        mockMvc.perform(get("/admin/report?token={token}&year={year}&month={month}", token.getValue(), now.getYear(), now.getMonthValue())
                 .header(HttpHeaders.ACCEPT, "text/csv"))
-                .andExpect(status().isOk())
-                .andExpect(content().string("year,month,extensions,downloads,downloads_total,publishers," +
-                        "average_reviews_per_extension,namespace_owners,extensions_by_rating_1,extensions_by_rating_2," +
-                        "extensions_by_rating_3,extensions_by_rating_4,extensions_by_rating_5," +
-                        "publishers_published_extensions_1,publishers_published_extensions_3," +
-                        "most_active_publishing_users_u_bar,most_active_publishing_users_u_foo,most_active_publishing_users_u_baz," +
-                        "namespace_extensions_n_baz,namespace_extensions_n_bar,namespace_extensions_n_foo," +
-                        "namespace_extension_versions_nv_baz,namespace_extension_versions_nv_foo,namespace_extension_versions_nv_bar," +
-                        "most_downloaded_extensions_foo.baz,most_downloaded_extensions_foo.bar,most_downloaded_extensions_bar.foo\n" +
-                        values.stream().map(Object::toString).collect(Collectors.joining(","))));
+                .andExpect(status().isBadRequest())
+                .andExpect(content().string("Combination of year and month lies in the future"));
     }
 
     @Test
-    public void testAdminOnTheFlyReportJson() throws Exception {
+    public void testCurrentMonthAdminReportJson() throws Exception {
         var token = mockAdminToken();
-        var year = 2021;
-        var month = 7;
-        var extensions = 9123L;
-        var downloads = 2145L;
-        var downloadsTotal = 57199L;
-        var publishers = 846L;
-        var averageReviewsPerExtension = 8.75;
-        var namespaceOwners = 623L;
-        var extensionsByRating = Map.of(3, 8000, 5, 1123);
-        var publishersByExtensionsPublished = Map.of(1, 6590, 3, 815);
-        var topMostActivePublishingUsers = Map.of("u_foo", 93, "u_bar", 543, "u_baz", 82);
-        var topNamespaceExtensions = Map.of("n_foo", 9, "n_bar", 48, "n_baz", 1239);
-        var topNamespaceExtensionVersions = Map.of("nv_foo", 234, "nv_bar", 67, "nv_baz", 932);
-        var topMostDownloadedExtensions = Map.of("foo.bar", 3847L, "bar.foo", 1237L, "foo.baz", 4378L);
-
-        var stats = new AdminStatistics();
-        stats.setYear(year);
-        stats.setMonth(month);
-        stats.setExtensions(extensions);
-        stats.setDownloads(downloads);
-        stats.setDownloadsTotal(downloadsTotal);
-        stats.setPublishers(publishers);
-        stats.setAverageReviewsPerExtension(averageReviewsPerExtension);
-        stats.setNamespaceOwners(namespaceOwners);
-        stats.setExtensionsByRating(extensionsByRating);
-        stats.setPublishersByExtensionsPublished(publishersByExtensionsPublished);
-        stats.setTopMostActivePublishingUsers(topMostActivePublishingUsers);
-        stats.setTopNamespaceExtensions(topNamespaceExtensions);
-        stats.setTopNamespaceExtensionVersions(topNamespaceExtensionVersions);
-        stats.setTopMostDownloadedExtensions(topMostDownloadedExtensions);
-
-        Mockito.when(repositories.findAdminStatisticsByYearAndMonth(year, month)).thenReturn(null);
-
-        var startInclusive = LocalDateTime.of(year, month, 1, 0, 0);
-        var endExclusive = startInclusive.plusMonths(1);
-        Mockito.when(repositories.countActiveExtensions(endExclusive)).thenReturn(extensions);
-        Mockito.when(repositories.downloadsBetween(startInclusive, endExclusive)).thenReturn(downloads);
-        Mockito.when(repositories.downloadsUntil(endExclusive)).thenReturn(downloadsTotal);
-        Mockito.when(repositories.countActiveExtensionPublishers(endExclusive)).thenReturn(publishers);
-        Mockito.when(repositories.averageNumberOfActiveReviewsPerActiveExtension(endExclusive)).thenReturn(averageReviewsPerExtension);
-        Mockito.when(repositories.countPublishersThatClaimedNamespaceOwnership(endExclusive)).thenReturn(namespaceOwners);
-        Mockito.when(repositories.countActiveExtensionsGroupedByExtensionReviewRating(endExclusive)).thenReturn(extensionsByRating);
-        Mockito.when(repositories.countActiveExtensionPublishersGroupedByExtensionsPublished(endExclusive)).thenReturn(publishersByExtensionsPublished);
-        Mockito.when(repositories.topMostActivePublishingUsers(endExclusive, 10)).thenReturn(topMostActivePublishingUsers);
-        Mockito.when(repositories.topNamespaceExtensions(endExclusive, 10)).thenReturn(topNamespaceExtensions);
-        Mockito.when(repositories.topNamespaceExtensionVersions(endExclusive, 10)).thenReturn(topNamespaceExtensionVersions);
-        Mockito.when(repositories.topMostDownloadedExtensions(endExclusive, 10)).thenReturn(topMostDownloadedExtensions);
-
-        mockMvc.perform(get("/admin/report?token={token}&year={year}&month={month}", token.getValue(), year, month)
+        var now = LocalDateTime.now();
+        mockMvc.perform(get("/admin/report?token={token}&year={year}&month={month}", token.getValue(), now.getYear(), now.getMonthValue())
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("Combination of year and month lies in the future")));
+    }
+
+    @Test
+    public void testChangeNamespace() throws Exception {
+        mockAdminUser();
+        var foo = new Namespace();
+        foo.setName("foo");
+        Mockito.when(repositories.findNamespace(foo.getName())).thenReturn(foo);
+
+        var bar = new Namespace();
+        bar.setName("bar");
+        Mockito.when(repositories.findNamespace(bar.getName())).thenReturn(null);
+
+        var content = "{" +
+                "\"oldNamespace\": \"foo\", " +
+                "\"newNamespace\": \"bar\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+            "}";
+
+        var json = new ChangeNamespaceJson();
+        json.oldNamespace = "foo";
+        json.newNamespace = "bar";
+        json.removeOldNamespace = false;
+        json.mergeIfNewNamespaceAlreadyExists = true;
+
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(content().json(adminStatisticsJson(s -> {
-                    s.year = year;
-                    s.month = month;
-                    s.extensions = extensions;
-                    s.downloads = downloads;
-                    s.downloadsTotal = downloadsTotal;
-                    s.publishers = publishers;
-                    s.averageReviewsPerExtension = averageReviewsPerExtension;
-                    s.namespaceOwners = namespaceOwners;
+                .andExpect(content().json(successJson("Scheduled namespace change from 'foo' to 'bar'.\nIt can take 15 minutes to a couple hours for the change to become visible.")))
+                .andExpect(result -> Mockito.verify(scheduler).enqueue(new ChangeNamespaceJobRequest(json)));
+    }
 
-                    var rating5 = new AdminStatisticsJson.ExtensionsByRating();
-                    rating5.rating = 5;
-                    rating5.extensions = 1123;
-                    var rating3 = new AdminStatisticsJson.ExtensionsByRating();
-                    rating3.rating = 3;
-                    rating3.extensions = 8000;
-                    s.extensionsByRating = List.of(rating5, rating3);
+    @Test
+    public void testChangeNamespaceOldNamespaceNull() throws Exception {
+        mockAdminUser();
+        var content = "{" +
+                "\"oldNamespace\": null, " +
+                "\"newNamespace\": \"bar\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+                "}";
 
-                    var publishers3 = new AdminStatisticsJson.PublishersByExtensionsPublished();
-                    publishers3.extensionsPublished = 3;
-                    publishers3.publishers = 815;
-                    var publishers1 = new AdminStatisticsJson.PublishersByExtensionsPublished();
-                    publishers1.extensionsPublished = 1;
-                    publishers1.publishers = 6590;
-                    s.publishersByExtensionsPublished = List.of(publishers3, publishers1);
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("Old namespace must have a value")));
+    }
 
-                    var activePublisher1 = new AdminStatisticsJson.TopMostActivePublishingUsers();
-                    activePublisher1.userLoginName = "u_bar";
-                    activePublisher1.publishedExtensionVersions = 543;
-                    var activePublisher2 = new AdminStatisticsJson.TopMostActivePublishingUsers();
-                    activePublisher2.userLoginName = "u_foo";
-                    activePublisher2.publishedExtensionVersions = 93;
-                    var activePublisher3 = new AdminStatisticsJson.TopMostActivePublishingUsers();
-                    activePublisher3.userLoginName = "u_baz";
-                    activePublisher3.publishedExtensionVersions = 82;
-                    s.topMostActivePublishingUsers = List.of(activePublisher1, activePublisher2, activePublisher3);
+    @Test
+    public void testChangeNamespaceOldNamespaceEmpty() throws Exception {
+        mockAdminUser();
+        var content = "{" +
+                "\"oldNamespace\": \"\", " +
+                "\"newNamespace\": \"bar\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+                "}";
 
-                    var namespaceExtensions1 = new AdminStatisticsJson.TopNamespaceExtensions();
-                    namespaceExtensions1.namespace = "n_baz";
-                    namespaceExtensions1.extensions = 1239;
-                    var namespaceExtensions2 = new AdminStatisticsJson.TopNamespaceExtensions();
-                    namespaceExtensions2.namespace = "n_bar";
-                    namespaceExtensions2.extensions = 48;
-                    var namespaceExtensions3 = new AdminStatisticsJson.TopNamespaceExtensions();
-                    namespaceExtensions3.namespace = "n_foo";
-                    namespaceExtensions3.extensions = 9;
-                    s.topNamespaceExtensions = List.of(namespaceExtensions1, namespaceExtensions2, namespaceExtensions3);
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("Old namespace must have a value")));
+    }
 
-                    var namespaceExtensionVersions1 = new AdminStatisticsJson.TopNamespaceExtensionVersions();
-                    namespaceExtensionVersions1.namespace = "nv_baz";
-                    namespaceExtensionVersions1.extensionVersions = 932;
-                    var namespaceExtensionVersions2 = new AdminStatisticsJson.TopNamespaceExtensionVersions();
-                    namespaceExtensionVersions2.namespace = "nv_foo";
-                    namespaceExtensionVersions2.extensionVersions = 234;
-                    var namespaceExtensionVersions3 = new AdminStatisticsJson.TopNamespaceExtensionVersions();
-                    namespaceExtensionVersions3.namespace = "nv_bar";
-                    namespaceExtensionVersions3.extensionVersions = 67;
-                    s.topNamespaceExtensionVersions = List.of(namespaceExtensionVersions1, namespaceExtensionVersions2, namespaceExtensionVersions3);
+    @Test
+    public void testChangeNamespaceOldNamespaceDoesNotExist() throws Exception {
+        mockAdminUser();
+        Mockito.when(repositories.findNamespace("foo")).thenReturn(null);
 
-                    var mostDownloadedExtensions1 = new AdminStatisticsJson.TopMostDownloadedExtensions();
-                    mostDownloadedExtensions1.extensionIdentifier = "foo.baz";
-                    mostDownloadedExtensions1.downloads = 4378L;
-                    var mostDownloadedExtensions2 = new AdminStatisticsJson.TopMostDownloadedExtensions();
-                    mostDownloadedExtensions2.extensionIdentifier = "foo.bar";
-                    mostDownloadedExtensions2.downloads = 3847L;
-                    var mostDownloadedExtensions3 = new AdminStatisticsJson.TopMostDownloadedExtensions();
-                    mostDownloadedExtensions3.extensionIdentifier = "bar.foo";
-                    mostDownloadedExtensions3.downloads = 1237L;
-                    s.topMostDownloadedExtensions = List.of(mostDownloadedExtensions1, mostDownloadedExtensions2, mostDownloadedExtensions3);
-                })));
+        var bar = new Namespace();
+        bar.setName("bar");
+        Mockito.when(repositories.findNamespace(bar.getName())).thenReturn(bar);
+
+        var content = "{" +
+                "\"oldNamespace\": \"foo\", " +
+                "\"newNamespace\": \"bar\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+                "}";
+
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("Old namespace doesn't exists: foo")));
+    }
+
+    @Test
+    public void testChangeNamespaceNewNamespaceNull() throws Exception {
+        mockAdminUser();
+        var content = "{" +
+                "\"oldNamespace\": \"foo\", " +
+                "\"newNamespace\": null, " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+                "}";
+
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("New namespace must have a value")));
+    }
+
+    @Test
+    public void testChangeNamespaceNewNamespaceEmpty() throws Exception {
+        mockAdminUser();
+        var content = "{" +
+                "\"oldNamespace\": \"foo\", " +
+                "\"newNamespace\": \"\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": true" +
+                "}";
+
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("New namespace must have a value")));
+    }
+
+    @Test
+    public void testChangeNamespaceAbortOnNewNamespaceExists() throws Exception {
+        mockAdminUser();
+        var foo = new Namespace();
+        foo.setName("foo");
+        Mockito.when(repositories.findNamespace(foo.getName())).thenReturn(foo);
+
+        var bar = new Namespace();
+        bar.setName("bar");
+        Mockito.when(repositories.findNamespace(bar.getName())).thenReturn(bar);
+
+        var content = "{" +
+                "\"oldNamespace\": \"foo\", " +
+                "\"newNamespace\": \"bar\", " +
+                "\"removeOldNamespace\": false, " +
+                "\"mergeIfNewNamespaceAlreadyExists\": false" +
+                "}";
+
+        mockMvc.perform(post("/admin/change-namespace")
+                .with(user("admin_user").authorities(new SimpleGrantedAuthority(("ROLE_ADMIN"))))
+                .with(csrf().asHeader())
+                .content(content)
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().json(errorJson("New namespace already exists: bar")));
     }
 
     //---------- UTILITY ----------//
@@ -1113,12 +1105,12 @@ public class AdminAPITest {
             var extVersion = new ExtensionVersion();
             extVersion.setExtension(extension);
             extVersion.setTargetPlatform(TargetPlatform.NAME_UNIVERSAL);
-            extVersion.setVersion(Integer.toString(i + 1));
+            extVersion.setVersion(createVersion(i + 1));
             extVersion.setActive(true);
             Mockito.when(repositories.findFiles(extVersion))
                     .thenReturn(Streamable.empty());
             Mockito.when(repositories.findFilesByType(anyCollection(), any()))
-                    .thenReturn(Streamable.empty());
+                    .thenReturn(Collections.emptyList());
             Mockito.when(repositories.findVersion(extVersion.getVersion(), TargetPlatform.NAME_UNIVERSAL, "baz", "foobar"))
                     .thenReturn(extVersion);
             Mockito.when(repositories.findTargetPlatformVersions(extVersion.getVersion(), "baz", "foobar"))
@@ -1141,7 +1133,7 @@ public class AdminAPITest {
             var bundle = new ExtensionVersion();
             bundle.setExtension(bundleExt);
             bundle.setTargetPlatform(TargetPlatform.NAME_UNIVERSAL);
-            bundle.setVersion(Integer.toString(i + 1));
+            bundle.setVersion(createVersion(i + 1));
             bundles.add(bundle);
         }
         Mockito.when(repositories.findBundledExtensionsReference(extension))
@@ -1156,7 +1148,7 @@ public class AdminAPITest {
             var dependant = new ExtensionVersion();
             dependant.setExtension(dependantExt);
             dependant.setTargetPlatform(TargetPlatform.NAME_UNIVERSAL);
-            dependant.setVersion(Integer.toString(i + 1));
+            dependant.setVersion(createVersion(i + 1));
             dependants.add(dependant);
         }
         Mockito.when(repositories.findDependenciesReference(extension))
@@ -1165,6 +1157,10 @@ public class AdminAPITest {
         Mockito.when(repositories.findAllReviews(extension))
                 .thenReturn(Streamable.empty());
         return versions;
+    }
+
+    private String createVersion(int major) {
+        return Integer.toString(major) + ".0.0";
     }
 
     private String adminStatisticsJson(Consumer<AdminStatisticsJson> content) throws JsonProcessingException {
@@ -1196,6 +1192,7 @@ public class AdminAPITest {
     }
     
     @TestConfiguration
+    @Import(SecurityConfig.class)
     static class TestConfig {
         @Bean
         TransactionTemplate transactionTemplate() {

@@ -10,7 +10,12 @@
 package org.eclipse.openvsx.repositories;
 
 import org.eclipse.openvsx.entities.*;
+import org.eclipse.openvsx.json.QueryRequest;
+import org.eclipse.openvsx.util.NamingUtil;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.util.Streamable;
 import org.springframework.stereotype.Component;
 
@@ -20,9 +25,17 @@ import java.util.List;
 import java.util.Map;
 
 import static org.eclipse.openvsx.entities.FileResource.DOWNLOAD;
+import static org.eclipse.openvsx.entities.FileResource.DOWNLOAD_SIG;
 
 @Component
 public class RepositoryService {
+
+    private static final int MAX_VERSIONS = 200;
+    private static final Sort VERSIONS_SORT = Sort.by(Sort.Direction.DESC, "semver.major", "semver.minor", "semver.patch")
+            .and(Sort.by(Sort.Direction.ASC, "semver.isPreRelease"))
+            .and(Sort.by(Sort.Direction.DESC, "universalTargetPlatform"))
+            .and(Sort.by(Sort.Direction.ASC, "targetPlatform"))
+            .and(Sort.by(Sort.Direction.DESC, "timestamp"));
 
     @Autowired NamespaceRepository namespaceRepo;
     @Autowired ExtensionRepository extensionRepo;
@@ -37,10 +50,11 @@ public class RepositoryService {
     @Autowired ExtensionJooqRepository extensionJooqRepo;
     @Autowired ExtensionVersionJooqRepository extensionVersionJooqRepo;
     @Autowired FileResourceJooqRepository fileResourceJooqRepo;
-    @Autowired NamespaceMembershipJooqRepository namespaceMembershipJooqRepo;
+    @Autowired NamespaceMembershipJooqRepository membershipJooqRepo;
     @Autowired AdminStatisticsRepository adminStatisticsRepo;
     @Autowired AdminStatisticCalculationsRepository adminStatisticCalculationsRepo;
     @Autowired MigrationItemRepository migrationItemRepo;
+    @Autowired SignatureKeyPairRepository signatureKeyPairRepo;
 
     public Namespace findNamespace(String name) {
         return namespaceRepo.findByNameIgnoreCase(name);
@@ -90,6 +104,10 @@ public class RepositoryService {
         return extensionRepo.findByActiveTrue();
     }
 
+    public Streamable<Extension> findAllNotMatchingByExtensionId(List<String> extensionIds) {
+        return extensionRepo.findAllNotMatchingByExtensionId(extensionIds);
+    }
+
     public long countExtensions() {
         return extensionRepo.count();
     }
@@ -122,20 +140,45 @@ public class RepositoryService {
          return extensionVersionRepo.findByExtensionAndActiveTrue(extension);
     }
 
-    public Streamable<ExtensionVersion> findActiveVersions(Collection<Extension> extensions) {
-        return extensionVersionRepo.findByExtensionInAndActiveTrue(extensions);
+    public List<ExtensionVersion> findActiveVersionsSorted(Extension extension) {
+        var page = PageRequest.ofSize(MAX_VERSIONS).withSort(VERSIONS_SORT);
+        return extensionVersionRepo.findByExtensionAndActiveTrue(extension, page);
+    }
+
+    public Page<ExtensionVersion> findActiveVersionsSorted(String namespace, String extension, PageRequest page) {
+        return extensionVersionRepo.findByExtensionNameIgnoreCaseAndExtensionNamespaceNameIgnoreCase(extension, namespace, page.withSort(VERSIONS_SORT));
+    }
+
+    public Page<ExtensionVersion> findActiveVersionsSorted(String namespace, String extension, String targetPlatform, PageRequest page) {
+        return extensionVersionRepo.findByTargetPlatformAndExtensionNameIgnoreCaseAndExtensionNamespaceNameIgnoreCase(targetPlatform, extension, namespace, page.withSort(VERSIONS_SORT));
+    }
+
+    public Page<String> findActiveVersionStringsSorted(String namespace, String extension, PageRequest page) {
+        return extensionVersionJooqRepo.findActiveVersionStringsSorted(namespace, extension, null, page);
+    }
+
+    public Page<String> findActiveVersionStringsSorted(String namespace, String extension, String targetPlatform, PageRequest page) {
+        return extensionVersionJooqRepo.findActiveVersionStringsSorted(namespace, extension, targetPlatform, page);
+    }
+
+    public List<String> findVersionStringsSorted(Extension extension, String targetPlatform, boolean onlyActive) {
+        return extensionVersionJooqRepo.findVersionStringsSorted(extension.getId(), targetPlatform, onlyActive, MAX_VERSIONS);
+    }
+
+    public Map<Long, List<String>> findActiveVersionStringsSorted(Collection<Long> extensionIds, String targetPlatform) {
+        return extensionVersionJooqRepo.findActiveVersionStringsSorted(extensionIds, targetPlatform, MAX_VERSIONS);
+    }
+
+    public List<ExtensionVersion> findActiveVersionReferencesSorted(Collection<Extension> extensions) {
+        return extensionVersionJooqRepo.findActiveVersionReferencesSorted(extensions, MAX_VERSIONS);
     }
 
     public Streamable<ExtensionVersion> findBundledExtensionsReference(Extension extension) {
-        return extensionVersionRepo.findByBundledExtensions(extensionId(extension));
+        return extensionVersionRepo.findByBundledExtensions(NamingUtil.toExtensionId(extension));
     }
 
     public Streamable<ExtensionVersion> findDependenciesReference(Extension extension) {
-        return extensionVersionRepo.findByDependencies(extensionId(extension));
-    }
-
-    private String extensionId(Extension extension) {
-        return extension.getNamespace().getName() + "." + extension.getName();
+        return extensionVersionRepo.findByDependencies(NamingUtil.toExtensionId(extension));
     }
 
     public Streamable<Extension> findExtensions(UserData user) {
@@ -170,16 +213,20 @@ public class RepositoryService {
         return fileResourceRepo.findByTypeAndStorageTypeAndNameIgnoreCaseIn(DOWNLOAD, storageType, names);
     }
 
+    public Streamable<FileResource> findFilesByType(String type) {
+        return fileResourceRepo.findByType(type);
+    }
+
     public FileResource findFileByType(ExtensionVersion extVersion, String type) {
+        if(FileResource.RESOURCE.equals(type)) {
+            throw new IllegalArgumentException("There are multiple files of type: " + FileResource.RESOURCE);
+        }
+
         return fileResourceRepo.findByExtensionAndType(extVersion, type);
     }
 
-    public Streamable<FileResource> findFilesByType(ExtensionVersion extVersion, Collection<String> types) {
-        return fileResourceRepo.findByExtensionAndTypeIn(extVersion, types);
-    }
-
-    public Streamable<FileResource> findFilesByType(Collection<ExtensionVersion> extVersions, Collection<String> types) {
-        return fileResourceRepo.findByExtensionInAndTypeIn(extVersions, types);
+    public List<FileResource> findFilesByType(Collection<ExtensionVersion> extVersions, Collection<String> types) {
+        return fileResourceJooqRepo.findByType(extVersions, types);
     }
 
     public Streamable<ExtensionReview> findActiveReviews(Extension extension) {
@@ -218,8 +265,8 @@ public class RepositoryService {
         return membershipRepo.findByUserAndNamespace(user, namespace);
     }
 
-    public long countMemberships(UserData user, Namespace namespace) {
-        return membershipRepo.countByUserAndNamespace(user, namespace);
+    public boolean isVerified(Namespace namespace, UserData user) {
+        return membershipJooqRepo.isVerified(namespace, user);
     }
 
     public Streamable<NamespaceMembership> findMemberships(Namespace namespace, String role) {
@@ -278,16 +325,12 @@ public class RepositoryService {
         return extensionJooqRepo.findAllActiveById(ids);
     }
 
+    public Page<ExtensionVersion> findActiveVersions(QueryRequest request) {
+        return extensionVersionJooqRepo.findActiveVersions(request);
+    }
+
     public List<ExtensionVersion> findActiveExtensionVersions(Collection<Long> extensionIds, String targetPlatform) {
         return extensionVersionJooqRepo.findAllActiveByExtensionIdAndTargetPlatform(extensionIds, targetPlatform);
-    }
-
-    public List<ExtensionVersion> findActiveExtensionVersionsByExtensionPublicId(String targetPlatform, String extensionPublicId) {
-        return extensionVersionJooqRepo.findAllActiveByExtensionPublicId(targetPlatform, extensionPublicId);
-    }
-
-    public List<ExtensionVersion> findActiveExtensionVersionsByNamespacePublicId(String targetPlatform, String namespacePublicId) {
-        return extensionVersionJooqRepo.findAllActiveByNamespacePublicId(targetPlatform, namespacePublicId);
     }
 
     public List<ExtensionVersion> findActiveExtensionVersionsByVersion(String version, String extensionName, String namespaceName) {
@@ -314,12 +357,8 @@ public class RepositoryService {
         return fileResourceJooqRepo.findAllResources(extVersionId, prefix);
     }
 
-    public Map<Long, Integer> findActiveReviewCountsByExtensionId(Collection<Long> extensionIds) {
-        return extensionJooqRepo.findAllActiveReviewCountsById(extensionIds);
-    }
-
     public List<NamespaceMembership> findNamespaceMemberships(Collection<Long> namespaceIds) {
-        return namespaceMembershipJooqRepo.findAllByNamespaceId(namespaceIds);
+        return membershipJooqRepo.findAllByNamespaceId(namespaceIds);
     }
 
     public AdminStatistics findAdminStatisticsByYearAndMonth(int year, int month) {
@@ -402,7 +441,56 @@ public class RepositoryService {
         return findNotMigratedItems("V1_28__MigrationItem.sql");
     }
 
+    public Streamable<MigrationItem> findNotMigratedVsixManifests() {
+        return findNotMigratedItems("V1_32__FileResource_Extract_VsixManifest.sql");
+    }
+
+    public Streamable<MigrationItem> findNotMigratedTargetPlatforms() {
+        return findNotMigratedItems("V1_34__ExtensionVersion_Fix_TargetPlatform.sql");
+    }
+
+    public Streamable<MigrationItem> findNotMigratedSha256Checksums() {
+        return findNotMigratedItems("V1_35__FileResource_Generate_Sha256_Checksum.sql");
+    }
+
     private Streamable<MigrationItem> findNotMigratedItems(String migrationScript) {
         return migrationItemRepo.findByMigrationScriptAndMigrationScheduledFalseOrderById(migrationScript);
+    }
+
+    public double getAverageReviewRating() {
+        return extensionReviewRepo.averageRatingAndActiveTrue();
+    }
+
+    public Double getAverageReviewRating(Extension extension) {
+        return extensionReviewRepo.averageRatingAndActiveTrue(extension);
+    }
+
+    public Streamable<FileResource> findFileResources(Namespace namespace) {
+        return fileResourceRepo.findByExtensionExtensionNamespace(namespace);
+    }
+
+    public SignatureKeyPair findActiveKeyPair() {
+        return signatureKeyPairRepo.findByActiveTrue();
+    }
+
+    public Streamable<ExtensionVersion> findVersions() {
+        return extensionVersionRepo.findAll();
+    }
+
+    public Streamable<ExtensionVersion> findVersionsWithout(SignatureKeyPair keyPair) {
+        return extensionVersionRepo.findBySignatureKeyPairNotOrSignatureKeyPairIsNull(keyPair);
+    }
+
+    public void deleteDownloadSigFiles() {
+        fileResourceRepo.deleteByType(DOWNLOAD_SIG);
+    }
+
+    public void deleteAllKeyPairs() {
+        extensionVersionRepo.setKeyPairsNull();
+        signatureKeyPairRepo.deleteAll();
+    }
+
+    public SignatureKeyPair findKeyPair(String publicId) {
+        return signatureKeyPairRepo.findByPublicId(publicId);
     }
 }

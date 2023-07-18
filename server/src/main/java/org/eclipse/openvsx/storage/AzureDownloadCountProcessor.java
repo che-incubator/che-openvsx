@@ -9,15 +9,18 @@
  ********************************************************************************/
 package org.eclipse.openvsx.storage;
 
+import com.google.common.collect.Lists;
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.SearchUtilService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.persistence.EntityManager;
-import javax.transaction.Transactional;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -26,6 +29,8 @@ import static org.eclipse.openvsx.entities.FileResource.STORAGE_AZURE;
 
 @Component
 public class AzureDownloadCountProcessor {
+
+    protected final Logger logger = LoggerFactory.getLogger(AzureDownloadCountProcessor.class);
 
     @Autowired
     EntityManager entityManager;
@@ -82,21 +87,26 @@ public class AzureDownloadCountProcessor {
     }
 
     @Transactional //needs transaction for lazy-loading versions
-    public void evictExtensionJsons(List<Extension> extensions) {
+    public void evictCaches(List<Extension> extensions) {
         extensions.forEach(extension -> {
             extension = entityManager.merge(extension);
             cache.evictExtensionJsons(extension);
+            cache.evictLatestExtensionVersion(extension);
         });
     }
 
-    @Transactional //needs transaction for lazy-loading versions
     public void updateSearchEntries(List<Extension> extensions) {
+        logger.info(">> updateSearchEntries");
         var activeExtensions = extensions.stream()
                 .filter(Extension::isActive)
-                .map(entityManager::merge)
                 .collect(Collectors.toList());
 
-        search.updateSearchEntries(activeExtensions);
+        logger.info("total active extensions: {}", activeExtensions.size());
+        var parts = Lists.partition(activeExtensions, 100);
+        logger.info("partitions: {} | partition size: 100", parts.size());
+
+        parts.forEach(search::updateSearchEntriesAsync);
+        logger.info("<< updateSearchEntries");
     }
 
     public List<String> processedItems(List<String> blobNames) {

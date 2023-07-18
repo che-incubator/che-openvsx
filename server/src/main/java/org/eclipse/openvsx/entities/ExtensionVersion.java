@@ -14,13 +14,12 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 import org.apache.jena.ext.com.google.common.collect.Maps;
 import org.eclipse.openvsx.json.ExtensionJson;
 import org.eclipse.openvsx.json.ExtensionReferenceJson;
 import org.eclipse.openvsx.json.SearchEntryJson;
-import org.eclipse.openvsx.util.SemanticVersion;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.TimeUtil;
 
@@ -30,7 +29,7 @@ public class ExtensionVersion implements Serializable {
 
     public static final Comparator<ExtensionVersion> SORT_COMPARATOR =
         Comparator.comparing(ExtensionVersion::getSemanticVersion)
-                .thenComparing(TargetPlatform::isUniversal)
+                .thenComparing(ExtensionVersion::isUniversalTargetPlatform)
                 .thenComparing(ExtensionVersion::getTargetPlatform)
                 .thenComparing(ExtensionVersion::getTimestamp)
                 .reversed();
@@ -52,7 +51,17 @@ public class ExtensionVersion implements Serializable {
 
     String targetPlatform;
 
-    @Transient
+    boolean universalTargetPlatform;
+
+    @Embedded
+    @AttributeOverrides({
+            @AttributeOverride(name = "major", column = @Column(name = "semver_major")),
+            @AttributeOverride(name = "minor", column = @Column(name = "semver_minor")),
+            @AttributeOverride(name = "patch", column = @Column(name = "semver_patch")),
+            @AttributeOverride(name = "preRelease", column = @Column(name = "semver_pre_release")),
+            @AttributeOverride(name = "isPreRelease", column = @Column(name = "semver_is_pre_release")),
+            @AttributeOverride(name = "buildMetadata", column = @Column(name = "semver_build_metadata"))
+    })
     SemanticVersion semver;
 
     boolean preRelease;
@@ -93,6 +102,8 @@ public class ExtensionVersion implements Serializable {
 
     String repository;
 
+    String sponsorLink;
+
     String bugs;
 
     @Column(length = 16)
@@ -118,6 +129,9 @@ public class ExtensionVersion implements Serializable {
     @Convert(converter = ListOfStringConverter.class)
     List<String> bundledExtensions;
 
+    @ManyToOne
+    SignatureKeyPair signatureKeyPair;
+
     @Transient
     Type type;
 
@@ -128,6 +142,7 @@ public class ExtensionVersion implements Serializable {
         var json = new ExtensionJson();
         json.targetPlatform = this.getTargetPlatform();
         json.namespace = extension.getNamespace().getName();
+        json.namespaceDisplayName = extension.getNamespace().getDisplayName();
         json.name = extension.getName();
         json.averageRating = extension.getAverageRating();
         json.downloadCount = extension.getDownloadCount();
@@ -145,6 +160,7 @@ public class ExtensionVersion implements Serializable {
         json.license = this.getLicense();
         json.homepage = this.getHomepage();
         json.repository = this.getRepository();
+        json.sponsorLink = this.getSponsorLink();
         json.bugs = this.getBugs();
         json.markdown = this.getMarkdown();
         json.galleryColor = this.getGalleryColor();
@@ -186,6 +202,7 @@ public class ExtensionVersion implements Serializable {
         entry.name = extension.getName();
         entry.namespace = extension.getNamespace().getName();
         entry.averageRating = extension.getAverageRating();
+        entry.reviewCount = extension.getReviewCount();
         entry.downloadCount = extension.getDownloadCount();
         entry.version = this.getVersion();
         entry.timestamp = TimeUtil.toUTCString(this.getTimestamp());
@@ -229,7 +246,8 @@ public class ExtensionVersion implements Serializable {
 	}
 
 	public void setVersion(String version) {
-		this.version = version;
+        this.version = version;
+        this.semver = SemanticVersion.parse(version);
     }
 
     public String getTargetPlatform() {
@@ -238,15 +256,23 @@ public class ExtensionVersion implements Serializable {
 
     public void setTargetPlatform(String targetPlatform) {
         this.targetPlatform = targetPlatform;
+        this.universalTargetPlatform = TargetPlatform.isUniversal(targetPlatform);
+    }
+
+    public boolean isUniversalTargetPlatform() {
+        return universalTargetPlatform;
+    }
+
+    public void setUniversalTargetPlatform(boolean universalTargetPlatform) {
+        // do nothing, universalTargetPlatform is derived from targetPlatform
     }
 
     public SemanticVersion getSemanticVersion() {
-        if (semver == null) {
-            var version = getVersion();
-            if (version != null)
-                semver = new SemanticVersion(version);
-        }
         return semver;
+    }
+
+    public void setSemanticVersion(SemanticVersion semver) {
+        // do nothing, semver is derived from version
     }
 
 	public boolean isPreRelease() {
@@ -361,6 +387,14 @@ public class ExtensionVersion implements Serializable {
 		this.repository = repository;
 	}
 
+	public String getSponsorLink() {
+        return sponsorLink;
+    }
+
+    public void setSponsorLink(String sponsorLink) {
+        this.sponsorLink = sponsorLink;
+    }
+
 	public String getBugs() {
 		return bugs;
 	}
@@ -425,6 +459,14 @@ public class ExtensionVersion implements Serializable {
 		this.bundledExtensions = bundledExtensions;
 	}
 
+    public SignatureKeyPair getSignatureKeyPair() {
+        return signatureKeyPair;
+    }
+
+    public void setSignatureKeyPair(SignatureKeyPair signatureKeyPair) {
+        this.signatureKeyPair = signatureKeyPair;
+    }
+
 	public void setType(ExtensionVersion.Type type) {
         this.type = type;
     }
@@ -455,6 +497,7 @@ public class ExtensionVersion implements Serializable {
                 && Objects.equals(license, that.license)
                 && Objects.equals(homepage, that.homepage)
                 && Objects.equals(repository, that.repository)
+                && Objects.equals(sponsorLink, that.sponsorLink)
                 && Objects.equals(bugs, that.bugs)
                 && Objects.equals(markdown, that.markdown)
                 && Objects.equals(galleryColor, that.galleryColor)
@@ -462,15 +505,18 @@ public class ExtensionVersion implements Serializable {
                 && Objects.equals(localizedLanguages, that.localizedLanguages)
                 && Objects.equals(qna, that.qna)
                 && Objects.equals(dependencies, that.dependencies)
-                && Objects.equals(bundledExtensions, that.bundledExtensions);
+                && Objects.equals(bundledExtensions, that.bundledExtensions)
+                && Objects.equals(signatureKeyPair, that.signatureKeyPair)
+                && type == that.type;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                id, getId(extension), version, targetPlatform, preRelease, preview, timestamp, getId(publishedWith),
+                id, getId(extension), version, targetPlatform, semver, preRelease, preview, timestamp, getId(publishedWith),
                 active, displayName, description, engines, categories, tags, extensionKind, license, homepage, repository,
-                bugs, markdown, galleryColor, galleryTheme, localizedLanguages, qna, dependencies, bundledExtensions
+                sponsorLink, bugs, markdown, galleryColor, galleryTheme, localizedLanguages, qna, dependencies,
+                bundledExtensions, signatureKeyPair, type
         );
     }
 

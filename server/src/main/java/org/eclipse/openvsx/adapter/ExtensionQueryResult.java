@@ -84,6 +84,9 @@ public class ExtensionQueryResult {
         public static final String FILE_VSIX = "Microsoft.VisualStudio.Services.VSIXPackage";
         public static final String FILE_LICENSE = "Microsoft.VisualStudio.Services.Content.License";
         public static final String FILE_WEB_RESOURCES = "Microsoft.VisualStudio.Code.WebResources/";
+        public static final String FILE_VSIXMANIFEST = "Microsoft.VisualStudio.Services.VsixManifest";
+        public static final String FILE_SIGNATURE = "Microsoft.VisualStudio.Services.VsixSignature";
+        public static final String FILE_PUBLIC_KEY = "Microsoft.VisualStudio.Services.PublicKey";
 
         public String assetType;
         public String source;
@@ -91,6 +94,7 @@ public class ExtensionQueryResult {
 
     public static class Property {
         public static final String PROP_REPOSITORY = "Microsoft.VisualStudio.Services.Links.Source";
+        public static final String PROP_SPONSOR_LINK = "Microsoft.VisualStudio.Code.SponsorLink";
         public static final String PROP_DEPENDENCY = "Microsoft.VisualStudio.Code.ExtensionDependencies";
         public static final String PROP_EXTENSION_PACK = "Microsoft.VisualStudio.Code.ExtensionPack";
         public static final String PROP_ENGINE = "Microsoft.VisualStudio.Code.Engine";

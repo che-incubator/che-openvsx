@@ -21,10 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
-import javax.persistence.EntityManager;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
 
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
@@ -41,6 +38,7 @@ import org.eclipse.openvsx.json.ResultJson;
 import org.eclipse.openvsx.json.UserJson;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.security.OAuth2UserServices;
+import org.eclipse.openvsx.security.SecurityConfig;
 import org.eclipse.openvsx.security.TokenService;
 import org.eclipse.openvsx.storage.StorageUtilService;
 import org.eclipse.openvsx.util.VersionService;
@@ -53,22 +51,31 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.util.Streamable;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 @WebMvcTest(UserAPI.class)
 @AutoConfigureWebClient
 @MockBean({
-        EntityManager.class, EclipseService.class, ClientRegistrationRepository.class, StorageUtilService.class,
-        CacheService.class
+        EclipseService.class, ClientRegistrationRepository.class, StorageUtilService.class, CacheService.class,
+        ExtensionValidator.class, SimpleMeterRegistry.class
 })
 public class UserAPITest {
 
     @SpyBean
     UserService users;
 
+    @MockBean
+    EntityManager entityManager;
+    
     @MockBean
     RepositoryService repositories;
 
@@ -151,6 +158,8 @@ public class UserAPITest {
         token.setActive(true);
         Mockito.when(repositories.findAccessToken(100))
                 .thenReturn(token);
+        Mockito.when(entityManager.merge(userData))
+                .thenReturn(userData);
 
         mockMvc.perform(post("/user/token/delete/{id}", 100)
                 .with(user("test_user"))
@@ -540,6 +549,7 @@ public class UserAPITest {
     }
     
     @TestConfiguration
+    @Import(SecurityConfig.class)
     static class TestConfig {
         @Bean
         TransactionTemplate transactionTemplate() {

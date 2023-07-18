@@ -211,12 +211,19 @@ class ExtensionListHeaderComp extends React.Component<ExtensionListHeaderComp.Pr
                                         <MenuItem value={'relevance'}>Relevance</MenuItem>
                                         <MenuItem value={'timestamp'}>Date</MenuItem>
                                         <MenuItem value={'downloadCount'}>Downloads</MenuItem>
-                                        <MenuItem value={'averageRating'}>Rating</MenuItem>
+                                        <MenuItem value={'rating'}>Rating</MenuItem>
                                     </Select>
                                 </Box>
                                 <Box
                                     className={classes.resultSortOrder}
                                     title={this.state.sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                                    tabIndex={0}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            this.handleSortOrderChange();
+                                        }
+                                    }}
                                     onClick={this.handleSortOrderChange}>
                                     {
                                         this.state.sortOrder === 'asc' ?

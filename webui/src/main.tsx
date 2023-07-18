@@ -17,6 +17,7 @@ import { Route, Switch } from 'react-router-dom';
 import { ExtensionListContainer, ExtensionListRoutes } from './pages/extension-list/extension-list-container';
 import { UserSettings, UserSettingsRoutes } from './pages/user/user-settings';
 import { ExtensionDetailRoutes, ExtensionDetail } from './pages/extension-detail/extension-detail';
+import { NamespaceDetailRoutes, NamespaceDetail } from './pages/namespace-detail/namespace-detail';
 import { UserAvatar } from './pages/user/avatar';
 import { AdminDashboard, AdminDashboardRoutes } from './pages/admin-dashboard/admin-dashboard';
 import { Banner } from './components/banner';
@@ -170,10 +171,12 @@ class MainComponent extends React.Component<MainComponent.Props, MainComponent.S
             toolbarContent: ToolbarContent,
             footer: FooterComponent,
             additionalRoutes: AdditionalRoutes,
-            banner: BannerComponent
+            banner: BannerComponent,
+            mainHeadTags: MainHeadTagsComponent
         } = this.props.pageSettings.elements;
         const classes = this.props.classes;
         return <React.Fragment>
+            { MainHeadTagsComponent ? <MainHeadTagsComponent pageSettings={this.props.pageSettings}/> : null }
             <Switch>
                 <Route path={AdminDashboardRoutes.MAIN}>
                     <AdminDashboard userLoading={this.state.userLoading} />
@@ -219,15 +222,19 @@ class MainComponent extends React.Component<MainComponent.Props, MainComponent.S
                             <Switch>
                                 <Route exact path={[ExtensionListRoutes.MAIN]}
                                     render={routeProps =>
-                                        <ExtensionListContainer
-                                            {...routeProps}
-                                        />
+                                        <ExtensionListContainer {...routeProps} />
                                     } />
                                 <Route path={UserSettingsRoutes.MAIN}
                                     render={routeProps =>
                                         <UserSettings
                                             {...routeProps}
                                             userLoading={this.state.userLoading}
+                                        />
+                                    } />
+                                <Route path={[NamespaceDetailRoutes.MAIN]}
+                                    render={routeProps =>
+                                        <NamespaceDetail
+                                            {...routeProps}
                                         />
                                     } />
                                 <Route path={[ExtensionDetailRoutes.MAIN_TARGET, ExtensionDetailRoutes.MAIN]}

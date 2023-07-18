@@ -10,15 +10,18 @@
 package org.eclipse.openvsx.migration;
 
 import org.eclipse.openvsx.ExtensionProcessor;
+import org.eclipse.openvsx.util.NamingUtil;
 import org.jobrunr.jobs.annotations.Job;
 import org.jobrunr.jobs.context.JobRunrDashboardLogger;
 import org.jobrunr.jobs.lambdas.JobRequestHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
+@ConditionalOnProperty(value = "ovsx.data.mirror.enabled", havingValue = "false", matchIfMissing = true)
 public class ExtractResourcesJobRequestHandler implements JobRequestHandler<MigrationJobRequest> {
 
     protected final Logger logger = new JobRunrDashboardLogger(LoggerFactory.getLogger(ExtractResourcesJobRequestHandler.class));
@@ -32,18 +35,20 @@ public class ExtractResourcesJobRequestHandler implements JobRequestHandler<Migr
     @Override
     @Job(name = "Extract resources from published extension version", retries = 3)
     public void run(MigrationJobRequest jobRequest) throws Exception {
-        var extVersion = service.getExtension(jobRequest.getEntityId());
-        logger.info("Extracting resources for: {}.{}-{}@{}", extVersion.getExtension().getNamespace().getName(), extVersion.getExtension().getName(), extVersion.getVersion(), extVersion.getTargetPlatform());
+        var extVersion = migrations.getExtension(jobRequest.getEntityId());
+        logger.info("Extracting resources for: {}", NamingUtil.toLogFormat(extVersion));
 
         service.deleteResources(extVersion);
-        var entry = service.getDownload(extVersion);
-        var extensionFile = migrations.getExtensionFile(entry);
+        var entry = migrations.getDownload(extVersion);
         var download = entry.getKey();
-        try(var extProcessor = new ExtensionProcessor(extensionFile)) {
+        try(
+                var extensionFile = migrations.getExtensionFile(entry);
+                var extProcessor = new ExtensionProcessor(extensionFile)
+        ) {
             extProcessor.processEachResource(download.getExtension(), (resource) -> {
                 resource.setStorageType(download.getStorageType());
-                migrations.uploadResource(resource);
-                service.persistResource(resource);
+                migrations.uploadFileResource(resource);
+                migrations.persistFileResource(resource);
             });
         }
 

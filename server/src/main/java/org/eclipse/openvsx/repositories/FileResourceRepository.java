@@ -9,17 +9,19 @@
  ********************************************************************************/
 package org.eclipse.openvsx.repositories;
 
+import org.eclipse.openvsx.entities.ExtensionVersion;
+import org.eclipse.openvsx.entities.FileResource;
+import org.eclipse.openvsx.entities.Namespace;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.util.Streamable;
 
 import java.util.Collection;
 
-import org.eclipse.openvsx.entities.ExtensionVersion;
-import org.eclipse.openvsx.entities.FileResource;
-
 public interface FileResourceRepository extends Repository<FileResource, Long> {
 
     Streamable<FileResource> findByExtension(ExtensionVersion extVersion);
+
+    Streamable<FileResource> findByExtensionExtensionNamespace(Namespace namespace);
 
     Streamable<FileResource> findByStorageType(String storageType);
 
@@ -33,7 +35,9 @@ public interface FileResourceRepository extends Repository<FileResource, Long> {
 
     Streamable<FileResource> findByExtensionAndTypeIn(ExtensionVersion extVersion, Collection<String> types);
 
-    Streamable<FileResource> findByExtensionInAndTypeIn(Collection<ExtensionVersion> extVersions, Collection<String> types);
-
     void deleteByExtensionAndType(ExtensionVersion extVersion, String type);
+
+    void deleteByType(String type);
+
+    Streamable<FileResource> findByType(String type);
 }

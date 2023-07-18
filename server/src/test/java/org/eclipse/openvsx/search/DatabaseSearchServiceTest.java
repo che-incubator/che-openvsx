@@ -23,7 +23,6 @@ import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -33,7 +32,7 @@ import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.util.Streamable;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
-import javax.persistence.EntityManager;
+import jakarta.persistence.EntityManager;
 
 @ExtendWith(SpringExtension.class)
 public class DatabaseSearchServiceTest {
@@ -277,14 +276,14 @@ public class DatabaseSearchServiceTest {
     }
 
     @Test
-    public void testSortByAverageRating() throws Exception {
-        var ext1 = mockExtension("yaml", 4.0, 0, 0, "redhat", Arrays.asList("Snippets", "Programming Languages"));
-        var ext2 = mockExtension("java", 5.0, 0, 0, "redhat", Arrays.asList("Snippets", "Programming Languages"));
-        var ext3 = mockExtension("openshift", 2.0, 0, 0, "redhat", Arrays.asList("Snippets", "Other"));
-        var ext4 = mockExtension("foo", 1.0, 0, 0, "bar", Arrays.asList("Other"));
+    public void testSortByRating() throws Exception {
+        var ext1 = mockExtension("yaml", 4.0, 1, 0, "redhat", Arrays.asList("Snippets", "Programming Languages"));
+        var ext2 = mockExtension("java", 5.0, 1, 0, "redhat", Arrays.asList("Snippets", "Programming Languages"));
+        var ext3 = mockExtension("openshift", 2.0, 1, 0, "redhat", Arrays.asList("Snippets", "Other"));
+        var ext4 = mockExtension("foo", 1.0, 1, 0, "bar", Arrays.asList("Other"));
         Mockito.when(repositories.findAllActiveExtensions()).thenReturn(Streamable.of(List.of(ext1, ext2, ext3, ext4)));
 
-        var searchOptions = new ISearchService.Options(null, null, TargetPlatform.NAME_UNIVERSAL, 50, 0, null, "averageRating", false);
+        var searchOptions = new ISearchService.Options(null, null, TargetPlatform.NAME_UNIVERSAL, 50, 0, null, "rating", false);
         var result = search.search(searchOptions);
         // all extensions should be there
         assertThat(result.getTotalHits()).isEqualTo(4);
@@ -307,16 +306,16 @@ public class DatabaseSearchServiceTest {
         return extensionName.hashCode();
     }
 
-    private Extension mockExtension(String name, double averageRating, int ratingCount, int downloadCount,
+    private Extension mockExtension(String name, double averageRating, long ratingCount, int downloadCount,
             String namespaceName, List<String> categories) {
         var extension = new Extension();
         extension.setName(name);
         extension.setId(name.hashCode());
         extension.setAverageRating(averageRating);
+        extension.setReviewCount(ratingCount);
         extension.setDownloadCount(downloadCount);
         extension.setActive(true);
         Mockito.when(entityManager.merge(extension)).thenReturn(extension);
-        Mockito.when(repositories.countActiveReviews(extension)).thenReturn((long) ratingCount);
         var namespace = new Namespace();
         namespace.setName(namespaceName);
         extension.setNamespace(namespace);
@@ -334,8 +333,7 @@ public class DatabaseSearchServiceTest {
         var token = new PersonalAccessToken();
         token.setUser(user);
         extVer.setPublishedWith(token);
-        var isUnrelated = false;
-        Mockito.when(repositories.countMemberships(user, namespace)).thenReturn(isUnrelated ? 0l : 1l);
+        Mockito.when(repositories.isVerified(namespace, user)).thenReturn(false);
         return extension;
     }
 

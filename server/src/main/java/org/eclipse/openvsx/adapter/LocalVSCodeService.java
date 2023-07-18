@@ -12,10 +12,12 @@ package org.eclipse.openvsx.adapter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.Lists;
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.openvsx.entities.Extension;
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.FileResource;
 import org.eclipse.openvsx.entities.Namespace;
+import org.eclipse.openvsx.publish.ExtensionVersionIntegrityService;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.SearchUtilService;
 import org.eclipse.openvsx.storage.StorageUtilService;
@@ -26,12 +28,11 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-
-import javax.transaction.Transactional;
 
 import static org.eclipse.openvsx.adapter.ExtensionQueryParam.Criterion.*;
 import static org.eclipse.openvsx.adapter.ExtensionQueryParam.*;
@@ -57,6 +58,9 @@ public class LocalVSCodeService implements IVSCodeService {
 
     @Autowired
     StorageUtilService storageUtil;
+
+    @Autowired
+    ExtensionVersionIntegrityService integrityService;
 
     @Value("${ovsx.webui.url:}")
     String webuiUrl;
@@ -176,7 +180,11 @@ public class LocalVSCodeService implements IVSCodeService {
 
         Map<Long, List<FileResource>> fileResources;
         if (test(flags, FLAG_INCLUDE_FILES) && !extensionVersionsMap.isEmpty()) {
-            var types = List.of(MANIFEST, README, LICENSE, ICON, DOWNLOAD, CHANGELOG);
+            var types = new ArrayList<>(List.of(MANIFEST, README, LICENSE, ICON, DOWNLOAD, CHANGELOG, VSIXMANIFEST));
+            if(integrityService.isEnabled()) {
+                types.add(DOWNLOAD_SIG);
+            }
+
             var idsMap = extensionVersionsMap.values().stream()
                     .flatMap(Collection::stream)
                     .collect(Collectors.toMap(ev -> ev.getId(), ev -> ev));
@@ -191,14 +199,6 @@ public class LocalVSCodeService implements IVSCodeService {
             fileResources = Collections.emptyMap();
         }
 
-        Map<Long, Integer> activeReviewCounts;
-        if(test(flags, FLAG_INCLUDE_STATISTICS) && !extensionsList.isEmpty()) {
-            var ids = extensionsList.stream().map(Extension::getId).collect(Collectors.toList());
-            activeReviewCounts = repositories.findActiveReviewCountsByExtensionId(ids);
-        } else {
-            activeReviewCounts = Collections.emptyMap();
-        }
-
         var latestVersions = allActiveExtensionVersions.stream()
                 .collect(Collectors.groupingBy(ev -> ev.getExtension().getId()))
                 .values()
@@ -209,7 +209,7 @@ public class LocalVSCodeService implements IVSCodeService {
         var extensionQueryResults = new ArrayList<ExtensionQueryResult.Extension>();
         for(var extension : extensionsList) {
             var latest = latestVersions.get(extension.getId());
-            var queryExt = toQueryExtension(extension, latest, activeReviewCounts, flags);
+            var queryExt = toQueryExtension(extension, latest, flags);
             queryExt.versions = extensionVersionsMap.getOrDefault(extension.getId(), Collections.emptyList()).stream()
                     .map(extVer -> toQueryVersion(extVer, fileResources, flags))
                     .collect(Collectors.toList());
@@ -232,7 +232,11 @@ public class LocalVSCodeService implements IVSCodeService {
         return resource != null ? UrlUtil.createApiFileUrl(fileBaseUrl, resource.getName()) : null;
     }
 
-    private ExtensionQueryResult toQueryResult(List<ExtensionQueryResult.Extension> extensions, long totalCount) {
+    public ExtensionQueryResult toQueryResult(List<ExtensionQueryResult.Extension> extensions) {
+        return toQueryResult(extensions, extensions.size());
+    }
+
+    public ExtensionQueryResult toQueryResult(List<ExtensionQueryResult.Extension> extensions, long totalCount) {
         var resultItem = new ExtensionQueryResult.ResultItem();
         resultItem.extensions = extensions;
 
@@ -286,6 +290,21 @@ public class LocalVSCodeService implements IVSCodeService {
         }
 
         var asset = (restOfTheUrl != null && restOfTheUrl.length() > 0) ? (assetType + "/" + restOfTheUrl) : assetType;
+        if((asset.equals(FILE_PUBLIC_KEY) || asset.equals(FILE_SIGNATURE)) && !integrityService.isEnabled()) {
+            throw new NotFoundException();
+        }
+
+        if(asset.equals(FILE_PUBLIC_KEY)) {
+            if(extVersion.getSignatureKeyPair() == null) {
+                throw new NotFoundException();
+            } else {
+                return ResponseEntity
+                        .status(HttpStatus.FOUND)
+                        .location(URI.create(UrlUtil.getPublicKeyUrl(extVersion)))
+                        .build();
+            }
+        }
+
         var resource = getFileFromDB(extVersion, asset);
         if (resource == null) {
             throw new NotFoundException();
@@ -298,28 +317,28 @@ public class LocalVSCodeService implements IVSCodeService {
     }
 
     private FileResource getFileFromDB(ExtensionVersion extVersion, String assetType) {
-        switch (assetType) {
-            case FILE_VSIX:
-                return repositories.findFileByType(extVersion, FileResource.DOWNLOAD);
-            case FILE_MANIFEST:
-                return repositories.findFileByType(extVersion, FileResource.MANIFEST);
-            case FILE_DETAILS:
-                return repositories.findFileByType(extVersion, FileResource.README);
-            case FILE_CHANGELOG:
-                return repositories.findFileByType(extVersion, FileResource.CHANGELOG);
-            case FILE_LICENSE:
-                return repositories.findFileByType(extVersion, FileResource.LICENSE);
-            case FILE_ICON:
-                return repositories.findFileByType(extVersion, FileResource.ICON);
-            default: {
-                var name = assetType.startsWith(FILE_WEB_RESOURCES)
-                        ? assetType.substring((FILE_WEB_RESOURCES.length()))
-                        : null;
+        var assets = Map.of(
+                FILE_VSIX, DOWNLOAD,
+                FILE_MANIFEST, MANIFEST,
+                FILE_DETAILS, README,
+                FILE_CHANGELOG, CHANGELOG,
+                FILE_LICENSE, LICENSE,
+                FILE_ICON, ICON,
+                FILE_VSIXMANIFEST, VSIXMANIFEST,
+                FILE_SIGNATURE, DOWNLOAD_SIG
+        );
 
-                return name != null && name.startsWith("extension/") // is web resource
-                        ? repositories.findFileByTypeAndName(extVersion, FileResource.RESOURCE, name)
-                        : null;
-            }
+        var type = assets.get(assetType);
+        if(type != null) {
+            return repositories.findFileByType(extVersion, type);
+        } else {
+            var name = assetType.startsWith(FILE_WEB_RESOURCES)
+                    ? assetType.substring((FILE_WEB_RESOURCES.length()))
+                    : null;
+
+            return name != null && name.startsWith("extension/") // is web resource
+                    ? repositories.findFileByTypeAndName(extVersion, FileResource.RESOURCE, name)
+                    : null;
         }
     }
 
@@ -373,12 +392,12 @@ public class LocalVSCodeService implements IVSCodeService {
         }
 
         var extVersions = repositories.findActiveExtensionVersionsByVersion(version, extensionName, namespaceName);
-        var extVersion = extVersions.stream().max(Comparator.<ExtensionVersion, Boolean>comparing(TargetPlatform::isUniversal)
+        var extVersion = extVersions.stream().max(Comparator.<ExtensionVersion, Boolean>comparing(ExtensionVersion::isUniversalTargetPlatform)
                 .thenComparing(ExtensionVersion::getTargetPlatform))
                 .orElse(null);
 
         if (extVersion == null) {
-            return ResponseEntity.notFound().build();
+            throw new NotFoundException();
         }
 
         var resources = repositories.findResourceFileResources(extVersion.getId(), path);
@@ -475,7 +494,7 @@ public class LocalVSCodeService implements IVSCodeService {
                 .body(json.getBytes(StandardCharsets.UTF_8));
     }
 
-    private ExtensionQueryResult.Extension toQueryExtension(Extension extension, ExtensionVersion latest, Map<Long, Integer> activeReviewCounts, int flags) {
+    private ExtensionQueryResult.Extension toQueryExtension(Extension extension, ExtensionVersion latest, int flags) {
         var namespace = extension.getNamespace();
 
         var queryExt = new ExtensionQueryResult.Extension();
@@ -486,7 +505,7 @@ public class LocalVSCodeService implements IVSCodeService {
         queryExt.publisher = new ExtensionQueryResult.Publisher();
         queryExt.publisher.publisherId = namespace.getPublicId();
         queryExt.publisher.publisherName = namespace.getName();
-        queryExt.publisher.displayName = namespace.getName();
+        queryExt.publisher.displayName = !StringUtils.isEmpty(namespace.getDisplayName()) ? namespace.getDisplayName() : namespace.getName();
         queryExt.tags = latest.getTags();
         queryExt.releaseDate = TimeUtil.toUTCString(extension.getPublishedDate());
         queryExt.publishedDate = TimeUtil.toUTCString(extension.getPublishedDate());
@@ -508,7 +527,7 @@ public class LocalVSCodeService implements IVSCodeService {
             }
             var ratingCountStat = new ExtensionQueryResult.Statistic();
             ratingCountStat.statisticName = STAT_RATING_COUNT;
-            ratingCountStat.value = activeReviewCounts.getOrDefault(extension.getId(), 0);
+            ratingCountStat.value = Optional.ofNullable(extension.getReviewCount()).orElse(0L);
             queryExt.statistics.add(ratingCountStat);
         }
 
@@ -537,6 +556,7 @@ public class LocalVSCodeService implements IVSCodeService {
             queryVer.addProperty(PROP_BRANDING_COLOR, extVer.getGalleryColor());
             queryVer.addProperty(PROP_BRANDING_THEME, extVer.getGalleryTheme());
             queryVer.addProperty(PROP_REPOSITORY, extVer.getRepository());
+            queryVer.addProperty(PROP_SPONSOR_LINK, extVer.getSponsorLink());
             queryVer.addProperty(PROP_ENGINE, getVscodeEngine(extVer));
             var dependencies = extVer.getDependencies().stream()
                     .collect(Collectors.joining(","));
@@ -568,6 +588,11 @@ public class LocalVSCodeService implements IVSCodeService {
             queryVer.addFile(FILE_ICON, createFileUrl(resourcesByType.get(ICON), fileBaseUrl));
             queryVer.addFile(FILE_VSIX, createFileUrl(resourcesByType.get(DOWNLOAD), fileBaseUrl));
             queryVer.addFile(FILE_CHANGELOG, createFileUrl(resourcesByType.get(CHANGELOG), fileBaseUrl));
+            queryVer.addFile(FILE_VSIXMANIFEST, createFileUrl(resourcesByType.get(VSIXMANIFEST), fileBaseUrl));
+            queryVer.addFile(FILE_SIGNATURE, createFileUrl(resourcesByType.get(DOWNLOAD_SIG), fileBaseUrl));
+            if(resourcesByType.containsKey(DOWNLOAD_SIG)) {
+                queryVer.addFile(FILE_PUBLIC_KEY, UrlUtil.getPublicKeyUrl(extVer));
+            }
         }
 
         return queryVer;

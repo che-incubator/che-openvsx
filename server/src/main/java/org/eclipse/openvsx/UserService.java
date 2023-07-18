@@ -9,25 +9,36 @@
  ********************************************************************************/
 package org.eclipse.openvsx;
 
-import java.util.UUID;
-
-import javax.persistence.EntityManager;
-import javax.transaction.Transactional;
-
+import com.google.common.base.Joiner;
+import org.apache.commons.io.IOUtils;
 import org.eclipse.openvsx.cache.CacheService;
-import org.eclipse.openvsx.entities.Namespace;
-import org.eclipse.openvsx.entities.NamespaceMembership;
-import org.eclipse.openvsx.entities.PersonalAccessToken;
-import org.eclipse.openvsx.entities.UserData;
+import org.eclipse.openvsx.entities.*;
+import org.eclipse.openvsx.json.AccessTokenJson;
+import org.eclipse.openvsx.json.NamespaceDetailsJson;
 import org.eclipse.openvsx.json.ResultJson;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.security.IdPrincipal;
+import org.eclipse.openvsx.storage.StorageUtilService;
 import org.eclipse.openvsx.util.ErrorResultException;
+import org.eclipse.openvsx.util.NotFoundException;
 import org.eclipse.openvsx.util.TimeUtil;
+import org.eclipse.openvsx.util.UrlUtil;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Component;
+
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Objects;
+import java.util.UUID;
+
+import static org.eclipse.openvsx.cache.CacheService.CACHE_NAMESPACE_DETAILS_JSON;
+import static org.eclipse.openvsx.util.UrlUtil.createApiUrl;
 
 @Component
 public class UserService {
@@ -39,7 +50,13 @@ public class UserService {
     RepositoryService repositories;
 
     @Autowired
+    StorageUtilService storageUtil;
+
+    @Autowired
     CacheService cache;
+
+    @Autowired
+    ExtensionValidator validator;
 
     public UserData findLoggedInUser() {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -68,38 +85,35 @@ public class UserService {
 
     @Transactional
     public UserData updateExistingUser(UserData user, OAuth2User oauth2User) {
-        switch (user.getProvider()) {
-            case "github": {
-                var updated = false;
-                String loginName = oauth2User.getAttribute("login");
-                if (loginName != null && !loginName.equals(user.getLoginName())) {
-                    user.setLoginName(loginName);
-                    updated = true;
-                }
-                String fullName = oauth2User.getAttribute("name");
-                if (fullName != null && !fullName.equals(user.getFullName())) {
-                    user.setFullName(fullName);
-                    updated = true;
-                }
-                String email = oauth2User.getAttribute("email");
-                if (email != null && !email.equals(user.getEmail())) {
-                    user.setEmail(email);
-                    updated = true;
-                }
-                String providerUrl = oauth2User.getAttribute("html_url");
-                if (providerUrl != null && !providerUrl.equals(user.getProviderUrl())) {
-                    user.setProviderUrl(providerUrl);
-                    updated = true;
-                }
-                String avatarUrl = oauth2User.getAttribute("avatar_url");
-                if (avatarUrl != null && !avatarUrl.equals(user.getAvatarUrl())) {
-                    user.setAvatarUrl(avatarUrl);
-                    updated = true;
-                }
-                if (updated) {
-                    cache.evictExtensionJsons(user);
-                }
-                break;
+        if ("github".equals(user.getProvider())) {
+            var updated = false;
+            String loginName = oauth2User.getAttribute("login");
+            if (loginName != null && !loginName.equals(user.getLoginName())) {
+                user.setLoginName(loginName);
+                updated = true;
+            }
+            String fullName = oauth2User.getAttribute("name");
+            if (fullName != null && !fullName.equals(user.getFullName())) {
+                user.setFullName(fullName);
+                updated = true;
+            }
+            String email = oauth2User.getAttribute("email");
+            if (email != null && !email.equals(user.getEmail())) {
+                user.setEmail(email);
+                updated = true;
+            }
+            String providerUrl = oauth2User.getAttribute("html_url");
+            if (providerUrl != null && !providerUrl.equals(user.getProviderUrl())) {
+                user.setProviderUrl(providerUrl);
+                updated = true;
+            }
+            String avatarUrl = oauth2User.getAttribute("avatar_url");
+            if (avatarUrl != null && !avatarUrl.equals(user.getAvatarUrl())) {
+                user.setAvatarUrl(avatarUrl);
+                updated = true;
+            }
+            if (updated) {
+                cache.evictExtensionJsons(user);
             }
         }
         return user;
@@ -190,4 +204,112 @@ public class UserService {
         return ResultJson.success("Added " + user.getLoginName() + " as " + role + " of " + namespace.getName() + ".");
     }
 
+    @Transactional(rollbackOn = { ErrorResultException.class, NotFoundException.class })
+    @CacheEvict(value = { CACHE_NAMESPACE_DETAILS_JSON }, key="#details.name")
+    public ResultJson updateNamespaceDetails(NamespaceDetailsJson details) {
+        var namespace = repositories.findNamespace(details.name);
+        if (namespace == null) {
+            throw new NotFoundException();
+        }
+
+        var issues = validator.validateNamespaceDetails(details);
+        if (!issues.isEmpty()) {
+            var message = issues.size() == 1
+                    ? issues.get(0).toString()
+                    : "Multiple issues were found in the extension metadata:\n" + Joiner.on("\n").join(issues);
+
+            throw new ErrorResultException(message);
+        }
+
+        if(!Objects.equals(details.displayName, namespace.getDisplayName())) {
+            namespace.setDisplayName(details.displayName);
+        }
+        if(!Objects.equals(details.description, namespace.getDescription())) {
+            namespace.setDescription(details.description);
+        }
+        if(!Objects.equals(details.website, namespace.getWebsite())) {
+            namespace.setWebsite(details.website);
+        }
+        if(!Objects.equals(details.supportLink, namespace.getSupportLink())) {
+            namespace.setSupportLink(details.supportLink);
+        }
+        if(!Objects.equals(details.socialLinks, namespace.getSocialLinks())) {
+            namespace.setSocialLinks(details.socialLinks);
+        }
+        if(details.logoBytes == null) {
+            details.logoBytes = new byte[0];
+        }
+
+        boolean contentEquals;
+        try (
+                var oldLogo = storageUtil.downloadNamespaceLogo(namespace);
+                var newLogoInput = new ByteArrayInputStream(details.logoBytes);
+                var oldLogoInput = Files.newInputStream(oldLogo.getPath())
+        ) {
+            contentEquals = IOUtils.contentEquals(newLogoInput, oldLogoInput);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        if(!contentEquals) {
+            if (details.logoBytes.length > 0) {
+                if (namespace.getLogoStorageType() != null) {
+                    storageUtil.removeNamespaceLogo(namespace);
+                }
+
+                namespace.setLogoName(details.logo);
+                namespace.setLogoBytes(details.logoBytes);
+                storeNamespaceLogo(namespace);
+            } else if (namespace.getLogoStorageType() != null) {
+                storageUtil.removeNamespaceLogo(namespace);
+                namespace.setLogoName(null);
+                namespace.setLogoBytes(null);
+                namespace.setLogoStorageType(null);
+            }
+        }
+
+        return ResultJson.success("Updated details for namespace " + details.name);
+    }
+
+    private void storeNamespaceLogo(Namespace namespace) {
+        if (storageUtil.shouldStoreLogoExternally(namespace)) {
+            storageUtil.uploadNamespaceLogo(namespace);
+            // Don't store the binary content in the DB - it's now stored externally
+            namespace.setLogoBytes(null);
+        } else {
+            namespace.setLogoStorageType(FileResource.STORAGE_DB);
+        }
+    }
+    @Transactional
+    public AccessTokenJson createAccessToken(UserData user, String description) {
+        var token = new PersonalAccessToken();
+        token.setUser(user);
+        token.setValue(generateTokenValue());
+        token.setActive(true);
+        token.setCreatedTimestamp(TimeUtil.getCurrentUTC());
+        token.setDescription(description);
+        entityManager.persist(token);
+        var json = token.toAccessTokenJson();
+        // Include the token value after creation so the user can copy it
+        json.value = token.getValue();
+        json.deleteTokenUrl = createApiUrl(UrlUtil.getBaseUrl(), "user", "token", "delete", Long.toString(token.getId()));
+
+        return json;
+    }
+
+    @Transactional
+    public ResultJson deleteAccessToken(UserData user, long id) {
+        var token = repositories.findAccessToken(id);
+        if (token == null || !token.isActive()) {
+            throw new NotFoundException();
+        }
+
+        user = entityManager.merge(user);
+        if(!token.getUser().equals(user)) {
+            throw new NotFoundException();
+        }
+
+        token.setActive(false);
+        return ResultJson.success("Deleted access token for user " + user.getLoginName() + ".");
+    }
 }

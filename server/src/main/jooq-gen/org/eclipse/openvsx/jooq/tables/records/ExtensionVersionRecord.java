@@ -383,6 +383,132 @@ public class ExtensionVersionRecord extends UpdatableRecordImpl<ExtensionVersion
         return (String) get(25);
     }
 
+    /**
+     * Setter for <code>public.extension_version.sponsor_link</code>.
+     */
+    public void setSponsorLink(String value) {
+        set(26, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.sponsor_link</code>.
+     */
+    public String getSponsorLink() {
+        return (String) get(26);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.signature_key_pair_id</code>.
+     */
+    public void setSignatureKeyPairId(Long value) {
+        set(27, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.signature_key_pair_id</code>.
+     */
+    public Long getSignatureKeyPairId() {
+        return (Long) get(27);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_major</code>.
+     */
+    public void setSemverMajor(Integer value) {
+        set(28, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_major</code>.
+     */
+    public Integer getSemverMajor() {
+        return (Integer) get(28);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_minor</code>.
+     */
+    public void setSemverMinor(Integer value) {
+        set(29, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_minor</code>.
+     */
+    public Integer getSemverMinor() {
+        return (Integer) get(29);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_patch</code>.
+     */
+    public void setSemverPatch(Integer value) {
+        set(30, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_patch</code>.
+     */
+    public Integer getSemverPatch() {
+        return (Integer) get(30);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_pre_release</code>.
+     */
+    public void setSemverPreRelease(String value) {
+        set(31, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_pre_release</code>.
+     */
+    public String getSemverPreRelease() {
+        return (String) get(31);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_is_pre_release</code>.
+     */
+    public void setSemverIsPreRelease(Boolean value) {
+        set(32, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_is_pre_release</code>.
+     */
+    public Boolean getSemverIsPreRelease() {
+        return (Boolean) get(32);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.semver_build_metadata</code>.
+     */
+    public void setSemverBuildMetadata(String value) {
+        set(33, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.semver_build_metadata</code>.
+     */
+    public String getSemverBuildMetadata() {
+        return (String) get(33);
+    }
+
+    /**
+     * Setter for <code>public.extension_version.universal_target_platform</code>.
+     */
+    public void setUniversalTargetPlatform(Boolean value) {
+        set(34, value);
+    }
+
+    /**
+     * Getter for <code>public.extension_version.universal_target_platform</code>.
+     */
+    public Boolean getUniversalTargetPlatform() {
+        return (Boolean) get(34);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -406,7 +532,7 @@ public class ExtensionVersionRecord extends UpdatableRecordImpl<ExtensionVersion
     /**
      * Create a detached, initialised ExtensionVersionRecord
      */
-    public ExtensionVersionRecord(Long id, String bugs, String description, String displayName, String galleryColor, String galleryTheme, String homepage, String license, String markdown, Boolean preview, String qna, String repository, LocalDateTime timestamp, String version, Long extensionId, Long publishedWithId, Boolean active, String dependencies, String bundledExtensions, String engines, String categories, String tags, String extensionKind, Boolean preRelease, String targetPlatform, String localizedLanguages) {
+    public ExtensionVersionRecord(Long id, String bugs, String description, String displayName, String galleryColor, String galleryTheme, String homepage, String license, String markdown, Boolean preview, String qna, String repository, LocalDateTime timestamp, String version, Long extensionId, Long publishedWithId, Boolean active, String dependencies, String bundledExtensions, String engines, String categories, String tags, String extensionKind, Boolean preRelease, String targetPlatform, String localizedLanguages, String sponsorLink, Long signatureKeyPairId, Integer semverMajor, Integer semverMinor, Integer semverPatch, String semverPreRelease, Boolean semverIsPreRelease, String semverBuildMetadata, Boolean universalTargetPlatform) {
         super(ExtensionVersion.EXTENSION_VERSION);
 
         setId(id);
@@ -435,5 +561,14 @@ public class ExtensionVersionRecord extends UpdatableRecordImpl<ExtensionVersion
         setPreRelease(preRelease);
         setTargetPlatform(targetPlatform);
         setLocalizedLanguages(localizedLanguages);
+        setSponsorLink(sponsorLink);
+        setSignatureKeyPairId(signatureKeyPairId);
+        setSemverMajor(semverMajor);
+        setSemverMinor(semverMinor);
+        setSemverPatch(semverPatch);
+        setSemverPreRelease(semverPreRelease);
+        setSemverIsPreRelease(semverIsPreRelease);
+        setSemverBuildMetadata(semverBuildMetadata);
+        setUniversalTargetPlatform(universalTargetPlatform);
     }
 }
