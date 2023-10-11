@@ -38,8 +38,11 @@ def versions = [
     commons_lang3: '3.12.0',
     httpclient5: '5.2.1',
     jaxb_api: '2.3.1',
-    jaxb_impl: '2.3.8'
+    jaxb_impl: '2.3.8',
+    snakeyaml: '2.0'
 ]
+
+ext['snakeyaml.version'] = versions.snakeyaml
 ext['junit-jupiter.version'] = versions.junit
 sourceCompatibility = versions.java
 
