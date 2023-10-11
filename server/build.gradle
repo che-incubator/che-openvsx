@@ -9,7 +9,7 @@ buildscript {
 plugins {
     id 'nu.studer.jooq' version '8.2.1'
     id 'de.undercouch.download' version '5.4.0'
-    id 'org.springframework.boot' version '3.1.0'
+    id 'org.springframework.boot' version '3.1.4'
     id 'io.spring.dependency-management' version '1.1.0'
     id 'io.gatling.gradle' version '3.9.5'
     id 'java'
@@ -39,7 +39,8 @@ def versions = [
     httpclient5: '5.2.1',
     jaxb_api: '2.3.1',
     jaxb_impl: '2.3.8',
-    snakeyaml: '2.0'
+    snakeyaml: '2.0',
+    xmlbeans: '5.1.1'
 ]
 
 ext['snakeyaml.version'] = versions.snakeyaml
@@ -67,6 +68,7 @@ configurations {
 }
 
 dependencies {
+    implementation "org.apache.xmlbeans:xmlbeans:${versions.xmlbeans}"
     implementation "org.springframework.boot:spring-boot-starter-web"
     implementation "org.springframework.boot:spring-boot-starter-validation"
     implementation "org.springframework.boot:spring-boot-starter-jooq"
