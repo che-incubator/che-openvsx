@@ -79,7 +79,7 @@ public class PublishExtensionVersionService {
     }
 
     @Transactional
-    public synchronized void persistResource(FileResource resource) {
+    public void persistResource(FileResource resource) {
         entityManager.persist(resource);
     }
 

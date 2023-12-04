@@ -30,7 +30,7 @@ import static org.eclipse.openvsx.entities.FileResource.DOWNLOAD_SIG;
 @Component
 public class RepositoryService {
 
-    private static final int MAX_VERSIONS = 200;
+    private static final int MAX_VERSIONS = 100;
     private static final Sort VERSIONS_SORT = Sort.by(Sort.Direction.DESC, "semver.major", "semver.minor", "semver.patch")
             .and(Sort.by(Sort.Direction.ASC, "semver.isPreRelease"))
             .and(Sort.by(Sort.Direction.DESC, "universalTargetPlatform"))
@@ -138,11 +138,6 @@ public class RepositoryService {
 
     public Streamable<ExtensionVersion> findActiveVersions(Extension extension) {
          return extensionVersionRepo.findByExtensionAndActiveTrue(extension);
-    }
-
-    public List<ExtensionVersion> findActiveVersionsSorted(Extension extension) {
-        var page = PageRequest.ofSize(MAX_VERSIONS).withSort(VERSIONS_SORT);
-        return extensionVersionRepo.findByExtensionAndActiveTrue(extension, page);
     }
 
     public Page<ExtensionVersion> findActiveVersionsSorted(String namespace, String extension, PageRequest page) {
@@ -365,52 +360,48 @@ public class RepositoryService {
         return adminStatisticsRepo.findByYearAndMonth(year, month);
     }
 
-    public long countActiveExtensions(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.countActiveExtensions(endExclusive);
+    public long countActiveExtensions() {
+        return adminStatisticCalculationsRepo.countActiveExtensions();
     }
 
-    public long countActiveExtensionPublishers(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.countActiveExtensionPublishers(endExclusive);
+    public long countActiveExtensionPublishers() {
+        return adminStatisticCalculationsRepo.countActiveExtensionPublishers();
     }
 
-    public Map<Integer,Integer> countActiveExtensionPublishersGroupedByExtensionsPublished(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.countActiveExtensionPublishersGroupedByExtensionsPublished(endExclusive);
+    public Map<Integer,Integer> countActiveExtensionPublishersGroupedByExtensionsPublished() {
+        return adminStatisticCalculationsRepo.countActiveExtensionPublishersGroupedByExtensionsPublished();
     }
 
-    public Map<Integer,Integer> countActiveExtensionsGroupedByExtensionReviewRating(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.countActiveExtensionsGroupedByExtensionReviewRating(endExclusive);
+    public Map<Integer,Integer> countActiveExtensionsGroupedByExtensionReviewRating() {
+        return adminStatisticCalculationsRepo.countActiveExtensionsGroupedByExtensionReviewRating();
     }
 
-    public double averageNumberOfActiveReviewsPerActiveExtension(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.averageNumberOfActiveReviewsPerActiveExtension(endExclusive);
+    public double averageNumberOfActiveReviewsPerActiveExtension() {
+        return adminStatisticCalculationsRepo.averageNumberOfActiveReviewsPerActiveExtension();
     }
 
-    public long countPublishersThatClaimedNamespaceOwnership(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.countPublishersThatClaimedNamespaceOwnership(endExclusive);
+    public long countPublishersThatClaimedNamespaceOwnership() {
+        return adminStatisticCalculationsRepo.countPublishersThatClaimedNamespaceOwnership();
     }
 
-    public long downloadsUntil(LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.downloadsSumByTimestampLessThan(endExclusive);
+    public long downloadsTotal() {
+        return adminStatisticCalculationsRepo.downloadsTotal();
     }
 
-    public long downloadsBetween(LocalDateTime startInclusive, LocalDateTime endExclusive) {
-        return adminStatisticCalculationsRepo.downloadsSumByTimestampGreaterThanEqualAndTimestampLessThan(startInclusive, endExclusive);
+    public Map<String, Integer> topMostActivePublishingUsers(int limit) {
+        return adminStatisticCalculationsRepo.topMostActivePublishingUsers(limit);
     }
 
-    public Map<String, Integer> topMostActivePublishingUsers(LocalDateTime endExclusive, int limit) {
-        return adminStatisticCalculationsRepo.topMostActivePublishingUsers(endExclusive, limit);
+    public Map<String, Integer> topNamespaceExtensions(int limit) {
+        return adminStatisticCalculationsRepo.topNamespaceExtensions(limit);
     }
 
-    public Map<String, Integer> topNamespaceExtensions(LocalDateTime endExclusive, int limit) {
-        return adminStatisticCalculationsRepo.topNamespaceExtensions(endExclusive, limit);
+    public Map<String, Integer> topNamespaceExtensionVersions(int limit) {
+        return adminStatisticCalculationsRepo.topNamespaceExtensionVersions(limit);
     }
 
-    public Map<String, Integer> topNamespaceExtensionVersions(LocalDateTime endExclusive, int limit) {
-        return adminStatisticCalculationsRepo.topNamespaceExtensionVersions(endExclusive, limit);
-    }
-
-    public Map<String, Long> topMostDownloadedExtensions(LocalDateTime endExclusive, int limit) {
-        return adminStatisticCalculationsRepo.topMostDownloadedExtensions(endExclusive, limit);
+    public Map<String, Long> topMostDownloadedExtensions(int limit) {
+        return adminStatisticCalculationsRepo.topMostDownloadedExtensions(limit);
     }
 
     public Streamable<ExtensionVersion> findTargetPlatformVersions(String version, String extensionName, String namespaceName) {
