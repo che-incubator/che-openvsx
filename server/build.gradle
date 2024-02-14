@@ -42,7 +42,8 @@ def versions = [
     jaxb_impl: '2.3.8',
     gatling: '3.9.5',
     snakeyaml: '2.0',
-    xmlbeans: '5.1.1'
+    xmlbeans: '5.1.1',
+    elasticsearch_java: '8.12.1'
 ]
 
 ext['snakeyaml.version'] = versions.snakeyaml
@@ -73,6 +74,7 @@ configurations {
 
 dependencies {
     implementation "org.apache.xmlbeans:xmlbeans:${versions.xmlbeans}"
+    implementation "co.elastic.clients:elasticsearch-java:${versions.elasticsearch_java}"
     implementation "org.springframework.boot:spring-boot-starter-web"
     implementation "org.springframework.boot:spring-boot-starter-validation"
     implementation "org.springframework.boot:spring-boot-starter-jooq"
