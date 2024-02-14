@@ -92,7 +92,9 @@ dependencies {
     implementation "org.jobrunr:jobrunr-spring-boot-3-starter:${versions.jobrunr}"
     implementation "org.flywaydb:flyway-core:${versions.flyway}"
     implementation "com.google.cloud:google-cloud-storage:${versions.gcloud}"
-    implementation "com.azure:azure-storage-blob:${versions.azure}"
+    implementation "com.azure:azure-storage-blob:${versions.azure}" {
+        exclude group: 'com.azure', module: 'azure-client-sdk-parent'
+    }
     implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${versions.springdoc}"
     implementation "com.google.guava:guava:${versions.guava}"
     implementation "com.fasterxml.jackson.core:jackson-core:${versions.jackson}"
