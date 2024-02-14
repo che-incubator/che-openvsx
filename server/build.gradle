@@ -69,6 +69,11 @@ configurations {
     devRuntimeOnly.extendsFrom runtimeOnly
 
     gatling.exclude group: "io.gatling.highcharts", module: "gatling-charts-highcharts"
+
+    //compileOnly
+    compile {
+        exclude group: 'com.azure', module: 'azure-client-sdk-parent'
+    }
 }
 
 dependencies {
