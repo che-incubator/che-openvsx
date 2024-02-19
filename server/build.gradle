@@ -42,6 +42,7 @@ def versions = [
     loki4j: '1.4.2'
     snakeyaml: '2.0',
     xmlbeans: '5.1.1',
+    reactor_netty: '1.1.15',
     parsson: '1.0.5'
 ]
 
@@ -75,6 +76,8 @@ dependencies {
     implementation "org.apache.xmlbeans:xmlbeans:${versions.xmlbeans}"
     // fix CVE-2023-4043 
     implementation "org.eclipse.parsson:parsson:${versions.parsson}"
+    // fix CVE-2023-34062
+    implementation "io.projectreactor.netty:reactor-netty-http:${versions.reactor_netty}"
     implementation "org.springframework.boot:spring-boot-starter-web"
     implementation "org.springframework.boot:spring-boot-starter-validation"
     implementation "org.springframework.boot:spring-boot-starter-jooq"
