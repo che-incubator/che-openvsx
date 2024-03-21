@@ -39,7 +39,7 @@ def versions = [
     jaxb_api: '2.3.1',
     jaxb_impl: '2.3.8',
     gatling: '3.9.5',
-    loki4j: '1.4.2'
+    loki4j: '1.4.2',
     snakeyaml: '2.0',
     xmlbeans: '5.1.1',
     reactor_netty: '1.1.15',
