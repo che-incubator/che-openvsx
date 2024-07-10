@@ -49,7 +49,7 @@ def versions = [
 
 ext['snakeyaml.version'] = versions.snakeyaml
 ext['junit-jupiter.version'] = versions.junit
-ext['spring-security.version'] = spring_security
+ext['spring-security.version'] = versions.spring_security
 sourceCompatibility = versions.java
 
 repositories {
