@@ -42,13 +42,14 @@ def versions = [
     loki4j: '1.4.2',
     snakeyaml: '2.0',
     xmlbeans: '5.1.1',
+    springsecurity: '6.1.8',
     reactor_netty: '1.1.15',
     parsson: '1.0.5'
 ]
 
 ext['snakeyaml.version'] = versions.snakeyaml
 ext['junit-jupiter.version'] = versions.junit
-ext['spring-security.version']='6.1.8'
+ext['spring-security.version'] = versions.springsecurity
 sourceCompatibility = versions.java
 
 repositories {
