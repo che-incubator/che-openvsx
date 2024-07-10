@@ -11,7 +11,7 @@ plugins {
     id 'nu.studer.jooq' version '8.2.1'
     id 'de.undercouch.download' version '5.4.0'
     id 'org.springframework.boot' version '3.1.4'
-    id 'io.spring.dependency-management' version '1.1.0'
+    id 'io.spring.dependency-management' version '1.1.5'
     id 'io.gatling.gradle' version '3.9.5'
     id 'java'
     id 'maven-publish'
@@ -40,7 +40,6 @@ def versions = [
     jaxb_impl: '2.3.8',
     gatling: '3.9.5',
     loki4j: '1.4.2',
-    spring_security: '6.1.8',
     snakeyaml: '2.0',
     xmlbeans: '5.1.1',
     reactor_netty: '1.1.15',
@@ -49,7 +48,6 @@ def versions = [
 
 ext['snakeyaml.version'] = versions.snakeyaml
 ext['junit-jupiter.version'] = versions.junit
-ext['spring-security.version'] = versions.spring_security
 sourceCompatibility = versions.java
 
 repositories {
