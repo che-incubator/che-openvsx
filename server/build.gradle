@@ -78,7 +78,6 @@ dependencies {
     implementation "org.eclipse.parsson:parsson:${versions.parsson}"
     // fix CVE-2023-34062
     implementation "io.projectreactor.netty:reactor-netty-http:${versions.reactor_netty}"
-    implementation "org.springframework.boot:spring-boot-starter-security"
     implementation "org.springframework.boot:spring-boot-starter-web"
     implementation "org.springframework.boot:spring-boot-starter-validation"
     implementation "org.springframework.boot:spring-boot-starter-jooq"
