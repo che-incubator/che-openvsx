@@ -32,7 +32,6 @@ RUN yarn --version \
   && yarn --cwd webui build:default
 
 # Main image derived from openvsx-server
-#FROM ghcr.io/eclipse/openvsx-server:${SERVER_VERSION}
 FROM ghcr.io/eclipse/openvsx-server:${OPENVSX_VERSION}
 ARG OPENVSX_VERSION
 

@@ -320,7 +320,6 @@ parameters:
   displayName: OpenVSX Server image
   description: OpenVSX Server image to use for the deployment of the OpenVSX Server
 - name: OPENVSX_CLI_IMAGE
-  value: quay.io/vsvydenk/openvsx:cli
   displayName: OpenVSX CLI image
   description: OpenVSX CLI image to use for the deployment of the OpenVSX CLI
 - name: OPENVSX_ELASTICSEARCH_IMAGE

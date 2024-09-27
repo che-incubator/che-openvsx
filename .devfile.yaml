@@ -9,6 +9,9 @@ components:
       memoryLimit: 8Gi
       cpuRequest: 100m
       cpuLimit: 2000m
+      env:
+        - name: OPENVSX_NAMESPACE
+          value: openvsx
       volumeMounts:
         - name: local
           path: /home/user/.local/
@@ -21,18 +24,24 @@ components:
       ephemeral: true
     name: local
 commands:
-  - id: build-publish
+  - id: oc-login
     exec:
-      label: "2. Build and Publish a Custom Plugin Registry"
+      commandLine: "1. Please log in to the OpenShift cluster as a cluster admin using the oc command"
       component: tool
-      workingDir: ${PROJECTS_ROOT}/devspaces/dependencies/che-plugin-registry
+  - id: build-openvsx-image
+    exec:
+      label: "2. Build and Publish OpenVSX Image"
+      component: tool
+      workingDir: ${PROJECTS_ROOT}/che-openvsx/openshift
       commandLine: |
-          set -o xtrace;
-          rm -rf output;
-          mkdir output;
-          BUILDER=podman SKIP_TEST=true SKIP_FORMAT=true SKIP_LINT=true NODE_BUILD_OPTIONS="-max-old-space-size=1024" ./build.sh &&
-          export IMAGE=image-registry.openshift-image-registry.svc:5000/$(kubectl get sa default -o json | jq -r '.metadata.namespace')/che-plugin-registry &&
-          podman tag quay.io/devspaces/pluginregistry-rhel8:next ${IMAGE} &&
+          read -p "Please enter the value for OPENVSX_VERSION (default: v0.17.0): " OPENVSX_VERSION
+          OPENVSX_VERSION=${OPENVSX_VERSION:-v0.17.0}
+          export OPENVSX_VERSION
+          echo "OPENVSX_VERSION is set to $OPENVSX_VERSION"
+          podman build -t "openvsx:$OPENVSX_VERSION" --build-arg "OPENVSX_VERSION=$OPENVSX_VERSION" -f openvsx.Dockerfile .&&
+          oc new-project $OPENVSX_NAMESPACE
+          export IMAGE=image-registry.openshift-image-registry.svc:5000/openshift/$OPENVSX_NAMESPACE &&
+          podman tag openvsx:$OPENVSX_VERSION ${IMAGE} &&
           podman login --tls-verify=false -u $(oc whoami | tr -d :) -p $(oc whoami -t) image-registry.openshift-image-registry.svc:5000 &&
           podman push --tls-verify=false "${IMAGE}"
   - id: configure-custom-plugin-registry
