@@ -1,0 +1,78 @@
+name: Publish OpenVSX Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream openvsx release tag (e.g. v0.34.6)"
+        required: true
+  schedule:
+    - cron: "17 8 * * *"
+
+env:
+  REGISTRY: quay.io
+  IMAGE_NAME: che-incubator/che-openvsx
+  UPSTREAM_REPO: eclipse-openvsx/openvsx
+
+jobs:
+  check-release:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+    - name: Resolve version
+      id: resolve
+      run: |
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION=$(gh api repos/${{ env.UPSTREAM_REPO }}/releases/latest --jq '.tag_name')
+        fi
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+        IMAGE_EXISTS=$(skopeo inspect "docker://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}" > /dev/null 2>&1 && echo "true" || echo "false")
+        if [ "$IMAGE_EXISTS" = "true" ] && [ -z "${{ github.event.inputs.version }}" ]; then
+          echo "should_build=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+  build-and-push:
+    needs: check-release
+    if: needs.check-release.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+    - name: Log in to Quay.io
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.QUAY_USERNAME }}
+        password: ${{ secrets.QUAY_PASSWORD }}
+
+    - name: Build and push OpenVSX Image
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+      with:
+        context: .
+        push: true
+        platforms: linux/amd64,linux/arm64
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-release.outputs.version }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        labels: |
+          org.opencontainers.image.title=OpenVSX
+          org.opencontainers.image.version=${{ needs.check-release.outputs.version }}
+        build-args: |
+          OPENVSX_VERSION=${{ needs.check-release.outputs.version }}
