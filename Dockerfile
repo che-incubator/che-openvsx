@@ -36,6 +36,9 @@ COPY --from=webui --chown=openvsx:openvsx /home/node/webui/dist/ BOOT-INF/classe
 COPY /server/scripts/run-server.sh /home/openvsx/server/
 RUN chmod u+x /home/openvsx/server/run-server.sh
 
+COPY /server/scripts/publish-extensions.sh /home/openvsx/
+RUN chmod +x /home/openvsx/publish-extensions.sh
+
 # Configure extensions storage
 RUN mkdir -p /tmp/extensions && \
     chmod -R 777 /tmp/extensions
