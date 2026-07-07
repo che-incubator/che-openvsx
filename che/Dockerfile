@@ -31,12 +31,21 @@ RUN mkdir -p /home/openvsx/server/config && \
 ##############################################################################################
 # Prepare WebUI component
 COPY --from=webui --chown=openvsx:openvsx /home/node/webui/dist/ BOOT-INF/classes/static/
+
+# Patch WebUI for subpath serving at /openvsx.
+# The upstream build assumes root '/' — rewrite asset references and inject a script
+# that intercepts fetch/navigation to prepend the base path.
+ARG OPENVSX_BASE_PATH=/openvsx
+COPY /che/patch-base-path.sh /tmp/
+RUN chmod +x /tmp/patch-base-path.sh && \
+    /tmp/patch-base-path.sh "${OPENVSX_BASE_PATH}" BOOT-INF/classes/static/index.html && \
+    rm /tmp/patch-base-path.sh
 ##############################################################################################
 
 COPY /server/scripts/run-server.sh /home/openvsx/server/
 RUN chmod u+x /home/openvsx/server/run-server.sh
 
-COPY /server/scripts/publish-extensions.sh /home/openvsx/
+COPY /che/publish-extensions.sh /home/openvsx/
 RUN chmod +x /home/openvsx/publish-extensions.sh
 
 # Configure extensions storage
