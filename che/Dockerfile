@@ -7,7 +7,7 @@ FROM registry.access.redhat.com/ubi9/nodejs-24-minimal
 
 USER 0
 
-RUN microdnf install -y java-25-openjdk-headless && \
+RUN microdnf install -y java-25-openjdk-headless jq && \
   microdnf clean all && \
   npm install -g ovsx
 
@@ -46,7 +46,8 @@ COPY /server/scripts/run-server.sh /home/openvsx/server/
 RUN chmod u+x /home/openvsx/server/run-server.sh
 
 COPY /che/publish-extensions.sh /home/openvsx/
-RUN chmod +x /home/openvsx/publish-extensions.sh
+COPY /che/update-extensions.sh /home/openvsx/
+RUN chmod +x /home/openvsx/publish-extensions.sh /home/openvsx/update-extensions.sh
 
 # Configure extensions storage
 RUN mkdir -p /tmp/extensions && \
