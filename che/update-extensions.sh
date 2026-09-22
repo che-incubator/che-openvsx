@@ -22,8 +22,8 @@
 #                           When set, only extensions whose engines.vscode constraint is satisfied
 #                           by this version will be updated. When unset, the latest non-pre-release
 #                           version is used regardless of engine compatibility.
-#   EXCLUDE_EXTENSIONS    - Comma-separated list of "namespace/name" extension IDs to skip
-#                           (e.g., "redhat/java,redhat/vscode-xml").
+#   EXCLUDE_EXTENSIONS    - Comma-separated list of "namespace.name" extension IDs to skip
+#                           (e.g., "redhat.java,redhat.vscode-xml").
 #   UPSTREAM_REGISTRY_URL  - Upstream registry URL (default: https://open-vsx.org)
 #   OVSX_FORWARDED_HOST    - External hostname for X-Forwarded-Host header (fixes cached API URLs)
 #   OVSX_FORWARDED_PROTO   - External scheme for X-Forwarded-Proto header (default: https)
@@ -235,10 +235,10 @@ is_newer() {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# is_excluded <namespace/name>
+# is_excluded <namespace.name>
 #
 # Checks whether an extension is in the EXCLUDE_EXTENSIONS list.
-# EXCLUDE_EXTENSIONS is a comma-separated list of "namespace/name" entries.
+# EXCLUDE_EXTENSIONS is a comma-separated list of "namespace.name" entries.
 # Returns 0 if excluded, 1 otherwise.
 # ──────────────────────────────────────────────────────────────────────
 is_excluded() {
@@ -291,8 +291,8 @@ while IFS= read -r line || [ -n "$line" ]; do
   name=$(echo "$ext_id" | cut -d/ -f2)
 
   # Step 2: Check if the extension is excluded from auto-update
-  if is_excluded "$namespace/$name"; then
-    echo "--- Skipping $namespace/$name (excluded)"
+  if is_excluded "$namespace.$name"; then
+    echo "--- Skipping $namespace.$name (excluded)"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
