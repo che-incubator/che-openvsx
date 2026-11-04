@@ -2,16 +2,26 @@
 #
 # Update extensions in the internal OpenVSX registry to their latest versions.
 #
-# Reads an extensions file (same format as publish-extensions.sh) where each line
-# is a URL to a .vsix file. For each extension:
-#   1. Parses the extension ID (namespace/name) from the .vsix URL
+# Reads an extensions file where each line is one of:
+#   namespace.name            - update to the latest stable version
+#   namespace.name@version    - update to a specific pinned version
+#   https://...vsix           - update the extension identified by this URL (legacy)
+#
+# For each extension:
+#   1. Parses the extension ID (namespace/name) from the line
 #   2. Queries the internal registry for the currently installed version
-#   3. Queries the upstream open-vsx.org for the latest stable (non-pre-release) version
+#   3. Determines the target version (upstream latest stable, or pinned)
 #   4. If VSCODE_ENGINE_VERSION is set, checks engine compatibility
 #   5. Downloads and publishes the newer version if one is available
 #
-# Extensions that are not yet installed in the internal registry are skipped —
+# Extensions not yet installed in the internal registry are skipped —
 # use publish-extensions.sh for initial publishing.
+#
+# For identifier-format entries, a universal VSIX is tried first. If it does
+# not exist and an architecture is configured, the platform-specific VSIX is
+# used as a fallback. The architecture is read from an "architecture" file in
+# the same directory as the extensions file (e.g. from the same ConfigMap),
+# or from the ARCHITECTURE environment variable.
 #
 # Required environment variables:
 #   OVSX_REGISTRY_URL   - Internal OpenVSX server URL (e.g. http://openvsx-server:8080/openvsx)
@@ -25,6 +35,7 @@
 #   EXCLUDE_EXTENSIONS    - Comma-separated list of "namespace.name" extension IDs to skip
 #                           (e.g., "redhat.java,redhat.vscode-xml").
 #   UPSTREAM_REGISTRY_URL  - Upstream registry URL (default: https://open-vsx.org)
+#   ARCHITECTURE           - Target platform fallback (e.g. linux-x64) when no universal VSIX exists
 #   OVSX_FORWARDED_HOST    - External hostname for X-Forwarded-Host header (fixes cached API URLs)
 #   OVSX_FORWARDED_PROTO   - External scheme for X-Forwarded-Proto header (default: https)
 #   NODE_EXTRA_CA_CERTS    - Path to CA bundle for self-signed certificates
@@ -35,6 +46,10 @@
 
 EXTENSIONS_FILE="${1:?Usage: update-extensions.sh <extensions-file>}"
 UPSTREAM_REGISTRY_URL="${UPSTREAM_REGISTRY_URL:-https://open-vsx.org}"
+
+# Read architecture from the ConfigMap-mounted file alongside extensions.list, or from env.
+ARCHITECTURE_FILE="$(dirname "$EXTENSIONS_FILE")/architecture"
+ARCHITECTURE="${ARCHITECTURE:-$(cat "$ARCHITECTURE_FILE" 2>/dev/null | tr -d '[:space:]')}"
 
 FORWARDED_HEADERS=""
 if [ -n "$OVSX_FORWARDED_HOST" ]; then
@@ -63,6 +78,28 @@ TOTAL=0
 UPDATED=0
 SKIPPED=0
 FAILED=0
+
+# ──────────────────────────────────────────────────────────────────────
+# parse_identifier <line>
+#
+# If the line is a "namespace.name" or "namespace.name@version" identifier
+# (not a URL), prints "namespace/name/version" (version may be empty) and
+# returns 0. Returns 1 for URL-format lines.
+# ──────────────────────────────────────────────────────────────────────
+parse_identifier() {
+  case "$1" in
+    *://*) return 1 ;;
+  esac
+
+  local ns name_ver name version
+  ns=$(echo "$1" | cut -d. -f1)
+  name_ver=$(echo "$1" | cut -d. -f2-)
+  name=$(echo "$name_ver" | cut -d@ -f1)
+  version=$(echo "$name_ver" | grep -o '@.*' | cut -c2-)
+
+  [ -n "$ns" ] && [ -n "$name" ] || return 1
+  printf '%s/%s/%s' "$ns" "$name" "${version:-}"
+}
 
 # ──────────────────────────────────────────────────────────────────────
 # parse_extension_id <vsix-url>
@@ -268,6 +305,9 @@ fi
 if [ -n "$EXCLUDE_EXTENSIONS" ]; then
   echo "Excluded extensions: $EXCLUDE_EXTENSIONS"
 fi
+if [ -n "$ARCHITECTURE" ]; then
+  echo "Architecture fallback: $ARCHITECTURE"
+fi
 echo ""
 
 while IFS= read -r line || [ -n "$line" ]; do
@@ -279,16 +319,22 @@ while IFS= read -r line || [ -n "$line" ]; do
 
   TOTAL=$((TOTAL + 1))
 
-  # Step 1: Parse extension ID from the VSIX URL
-  ext_id=$(parse_extension_id "$line") || true
-  if [ -z "$ext_id" ]; then
-    echo "WARN: Could not parse extension ID from: $line"
-    FAILED=$((FAILED + 1))
-    continue
+  # Step 1: Parse extension ID — identifier format or legacy URL.
+  pinned_version=""
+  if id_info=$(parse_identifier "$line"); then
+    namespace=$(echo "$id_info" | cut -d/ -f1)
+    name=$(echo "$id_info" | cut -d/ -f2)
+    pinned_version=$(echo "$id_info" | cut -d/ -f3)
+  else
+    ext_id=$(parse_extension_id "$line") || true
+    if [ -z "$ext_id" ]; then
+      echo "WARN: Could not parse extension ID from: $line"
+      FAILED=$((FAILED + 1))
+      continue
+    fi
+    namespace=$(echo "$ext_id" | cut -d/ -f1)
+    name=$(echo "$ext_id" | cut -d/ -f2)
   fi
-
-  namespace=$(echo "$ext_id" | cut -d/ -f1)
-  name=$(echo "$ext_id" | cut -d/ -f2)
 
   # Step 2: Check if the extension is excluded from auto-update
   if is_excluded "$namespace.$name"; then
@@ -308,14 +354,19 @@ while IFS= read -r line || [ -n "$line" ]; do
   fi
   echo "  Installed: $installed"
 
-  # Step 4: Get the latest stable (non-pre-release) version from the upstream registry
-  upstream=$(get_latest_release_version "$namespace" "$name")
-  if [ -z "$upstream" ]; then
-    echo "  WARN: No stable (non-pre-release) version found upstream, skipping"
-    SKIPPED=$((SKIPPED + 1))
-    continue
+  # Step 4: Determine target version — pinned or latest stable from upstream.
+  if [ -n "$pinned_version" ]; then
+    upstream="$pinned_version"
+    echo "  Pinned:    $upstream"
+  else
+    upstream=$(get_latest_release_version "$namespace" "$name")
+    if [ -z "$upstream" ]; then
+      echo "  WARN: No stable (non-pre-release) version found upstream, skipping"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+    echo "  Upstream:  $upstream"
   fi
-  echo "  Upstream:  $upstream"
 
   # Step 5: Compare versions — skip if already up to date
   if ! is_newer "$upstream" "$installed"; then
@@ -331,15 +382,26 @@ while IFS= read -r line || [ -n "$line" ]; do
     continue
   fi
 
-  # Step 7: Download the newer .vsix from the upstream registry
+  # Step 7: Download the newer .vsix — try universal first, fall back to architecture-specific.
   download_url="$UPSTREAM_REGISTRY_URL/api/$namespace/$name/$upstream/file/$namespace.$name-$upstream.vsix"
   vsix_path="$DOWNLOAD_DIR/$namespace.$name-$upstream.vsix"
 
   echo "  Downloading: $download_url"
-  if ! curl -fsSL -o "$vsix_path" "$download_url"; then
-    echo "  WARN: Failed to download $download_url"
-    FAILED=$((FAILED + 1))
-    continue
+  if ! curl -fsSL -o "$vsix_path" "$download_url" 2>/dev/null; then
+    if [ -n "$ARCHITECTURE" ]; then
+      download_url="$UPSTREAM_REGISTRY_URL/api/$namespace/$name/$ARCHITECTURE/$upstream/file/$namespace.$name-$upstream@$ARCHITECTURE.vsix"
+      vsix_path="$DOWNLOAD_DIR/$namespace.$name-$upstream@$ARCHITECTURE.vsix"
+      echo "  Universal not found, trying $ARCHITECTURE: $download_url"
+      if ! curl -fsSL -o "$vsix_path" "$download_url"; then
+        echo "  WARN: Failed to download $namespace.$name $upstream (tried universal and $ARCHITECTURE)"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+    else
+      echo "  WARN: Failed to download $download_url"
+      FAILED=$((FAILED + 1))
+      continue
+    fi
   fi
 
   # Step 8: Publish the updated extension to the internal registry
